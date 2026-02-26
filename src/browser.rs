@@ -47,6 +47,13 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         args.push("--restore-last-session".to_owned());
     }
 
+    // Load unpacked extensions
+    if !config.extensions.is_empty() {
+        let paths = config.extensions.join(",");
+        args.push(format!("--load-extension={paths}"));
+        tracing::info!("Loading extensions: {paths}");
+    }
+
     tracing::info!("Launching browser: {}", config.executable);
     let child = Command::new(&config.executable)
         .args(&args)

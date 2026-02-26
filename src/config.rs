@@ -13,6 +13,8 @@ pub struct BrowserConfig {
     pub restore_session: bool,
     #[serde(default)]
     pub dedicated_profile: bool,
+    #[serde(default)]
+    pub extensions: Vec<String>,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {

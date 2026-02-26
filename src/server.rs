@@ -104,6 +104,26 @@ pub struct ClickTextParams {
     pub tag: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct HoverParams {
+    #[schemars(description = "CSS selector of the element to hover over")]
+    pub selector: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PressKeyParams {
+    #[schemars(description = "Key to press (e.g. \"Enter\", \"Tab\", \"Escape\", \"ArrowDown\", \"Backspace\", \"Space\")")]
+    pub key: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetAttributeParams {
+    #[schemars(description = "CSS selector of the element")]
+    pub selector: String,
+    #[schemars(description = "Attribute name to read (e.g. \"href\", \"src\", \"data-id\", \"value\")")]
+    pub attribute: String,
+}
+
 // -- MCP Server --
 
 #[derive(Debug, Clone)]
@@ -370,15 +390,21 @@ impl CausewayServer {
         &self,
         Parameters(TypeTextParams { selector, text, clear }): Parameters<TypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Focus the element (and optionally select all text for clearing)
+        // Find the first visible matching element, focus it
         let should_clear = clear.unwrap_or(false);
         let js = format!(
-            r#"(() => {{
-                const el = document.querySelector({sel});
-                if (!el) return false;
-                el.focus();
-                if ({clear}) el.select();
-                return true;
+            r#"(async () => {{
+                const els = document.querySelectorAll({sel});
+                for (const el of els) {{
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;
+                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    el.focus();
+                    if ({clear}) el.select();
+                    return true;
+                }}
+                return false;
             }})()"#,
             sel = serde_json::to_string(&selector).unwrap(),
             clear = should_clear
@@ -471,6 +497,114 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Scrolled by ({scroll_x:.0}, {scroll_y:.0})"
         ))]))
+    }
+
+    #[tool(description = "Hover over an element by CSS selector. Useful for revealing dropdown menus, tooltips, or hover states.")]
+    async fn hover(
+        &self,
+        Parameters(HoverParams { selector }): Parameters<HoverParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Use same smart selection as click — find first visible, in-viewport element
+        let js = format!(
+            r#"(async () => {{
+                const els = document.querySelectorAll({sel});
+                if (!els.length) return null;
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                for (const el of els) {{
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;
+                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const rect = el.getBoundingClientRect();
+                    const cx = rect.x + rect.width / 2;
+                    const cy = rect.y + rect.height / 2;
+                    if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                        return {{ x: cx, y: cy }};
+                    }}
+                }}
+                return null;
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap()
+        );
+
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let coords = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        match coords {
+            Some(v) if !v.is_null() => {
+                let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                cdp::execute(&*self.live.get().await, commands::hover(x, y))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Hover failed: {e}"), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Hovered over '{selector}' at ({x:.0}, {y:.0})"
+                ))]))
+            }
+            _ => Err(McpError::invalid_params(
+                format!("No visible, in-viewport element found for: {selector}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(description = "Press a keyboard key (Enter, Tab, Escape, ArrowDown, Backspace, Space, etc.). Useful for form submission, navigation, and closing dialogs.")]
+    async fn press_key(
+        &self,
+        Parameters(PressKeyParams { key }): Parameters<PressKeyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        cdp::execute_sequence(&*self.live.get().await, commands::press_key(&key))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Key press failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pressed key: {key}"
+        ))]))
+    }
+
+    #[tool(description = "Read an attribute value from the first matching element. Useful for getting href, src, data-* attributes, or form values.")]
+    async fn get_attribute(
+        &self,
+        Parameters(GetAttributeParams { selector, attribute }): Parameters<GetAttributeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = format!(
+            r#"(() => {{
+                const el = document.querySelector({sel});
+                if (!el) return null;
+                return el.getAttribute({attr});
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap(),
+            attr = serde_json::to_string(&attribute).unwrap()
+        );
+
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to get attribute: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        match value {
+            Some(v) if !v.is_null() => {
+                let attr_value = v.as_str().unwrap_or("(non-string value)");
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{attribute}=\"{attr_value}\""
+                ))]))
+            }
+            _ => Err(McpError::invalid_params(
+                format!("Element '{selector}' not found or attribute '{attribute}' not present"),
+                None,
+            )),
+        }
     }
 
     #[tool(description = "Navigate back in browser history.")]

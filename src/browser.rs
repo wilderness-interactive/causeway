@@ -88,31 +88,45 @@ fn kill_process(exe_name: &str) {
         .output();
 }
 
-async fn try_connect_existing(port: u16) -> Result<String, ()> {
+/// Find the WebSocket URL for a specific target ID, or the first page target if None.
+pub async fn find_target_ws_url(port: u16, target_id: Option<&str>) -> Result<String, BrowserError> {
     let url = format!("http://localhost:{port}/json");
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
         .build()
-        .map_err(|_| ())?;
+        .map_err(|e| BrowserError::LaunchFailed(e.to_string()))?;
 
     let targets: Vec<serde_json::Value> = client
         .get(&url)
         .send()
         .await
-        .map_err(|_| ())?
+        .map_err(|_| BrowserError::Timeout)?
         .json()
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| BrowserError::Timeout)?;
 
     for target in &targets {
-        if target.get("type").and_then(|t| t.as_str()) == Some("page") {
-            if let Some(ws_url) = target.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
-                return Ok(ws_url.to_owned());
+        if target.get("type").and_then(|t| t.as_str()) != Some("page") {
+            continue;
+        }
+
+        if let Some(wanted_id) = target_id {
+            let id = target.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id != wanted_id {
+                continue;
             }
+        }
+
+        if let Some(ws_url) = target.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
+            return Ok(ws_url.to_owned());
         }
     }
 
-    Err(())
+    Err(BrowserError::Timeout)
+}
+
+async fn try_connect_existing(port: u16) -> Result<String, ()> {
+    find_target_ws_url(port, None).await.map_err(|_| ())
 }
 
 async fn poll_until_ready(port: u16) -> Result<String, BrowserError> {

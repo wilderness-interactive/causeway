@@ -6,6 +6,7 @@ mod server;
 
 use std::sync::Arc;
 use rmcp::ServiceExt;
+use cdp::LiveConnection;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,17 +30,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let conn = cdp::connect(&ws_url).await?;
-    tracing::info!("CDP WebSocket connected");
+    let conn = cdp::connect_to_target(&ws_url).await?;
+    tracing::info!("CDP WebSocket connected, domains enabled");
 
-    // Enable required domains
-    cdp::execute(&conn, commands::enable_page()).await?;
-    cdp::execute(&conn, commands::enable_dom()).await?;
-    cdp::execute(&conn, commands::enable_runtime()).await?;
-    tracing::info!("CDP domains enabled");
-
-    let conn = Arc::new(conn);
-    let mcp_server = server::CausewayServer::new(conn, config.browser.port);
+    let live = Arc::new(LiveConnection::new(conn));
+    let mcp_server = server::CausewayServer::new(live, config.browser.port);
 
     let service = mcp_server
         .serve(rmcp::transport::io::stdio())

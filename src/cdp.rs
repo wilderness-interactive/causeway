@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 // --- Wire format data structures ---
@@ -203,4 +203,46 @@ pub async fn execute_sequence(
         last_result = send(conn, method, params).await?;
     }
     Ok(last_result)
+}
+
+// --- Swappable connection for tab switching and reconnect ---
+
+/// Holds the active CDP connection. All tools read through this.
+/// When a tab switch or reconnect happens, the inner Arc gets replaced.
+pub struct LiveConnection {
+    inner: RwLock<Arc<CdpConnection>>,
+}
+
+impl std::fmt::Debug for LiveConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveConnection").finish()
+    }
+}
+
+impl LiveConnection {
+    pub fn new(conn: CdpConnection) -> Self {
+        Self {
+            inner: RwLock::new(Arc::new(conn)),
+        }
+    }
+
+    /// Get a snapshot of the current connection.
+    pub async fn get(&self) -> Arc<CdpConnection> {
+        self.inner.read().await.clone()
+    }
+
+    /// Swap to a new connection (tab switch or reconnect).
+    pub async fn swap(&self, new_conn: CdpConnection) {
+        let mut guard = self.inner.write().await;
+        *guard = Arc::new(new_conn);
+    }
+}
+
+/// Connect to a target and enable required CDP domains.
+pub async fn connect_to_target(ws_url: &str) -> Result<CdpConnection, CdpError> {
+    let conn = connect(ws_url).await?;
+    execute(&conn, crate::commands::enable_page()).await?;
+    execute(&conn, crate::commands::enable_dom()).await?;
+    execute(&conn, crate::commands::enable_runtime()).await?;
+    Ok(conn)
 }

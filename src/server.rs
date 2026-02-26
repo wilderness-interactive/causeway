@@ -7,7 +7,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router,
 };
 
-use crate::cdp::{self, CdpConnection};
+use crate::cdp::{self, LiveConnection};
 use crate::commands;
 
 // -- Tool parameter structs --
@@ -96,20 +96,28 @@ pub struct QueryElementsParams {
     pub selector: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClickTextParams {
+    #[schemars(description = "The text to search for in element content (case-insensitive substring match)")]
+    pub text: String,
+    #[schemars(description = "HTML tag to limit search to (e.g. \"button\", \"a\"). Default: \"*\" (all elements)")]
+    pub tag: Option<String>,
+}
+
 // -- MCP Server --
 
 #[derive(Debug, Clone)]
 pub struct CausewayServer {
-    conn: Arc<CdpConnection>,
+    live: Arc<LiveConnection>,
     port: u16,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl CausewayServer {
-    pub fn new(conn: Arc<CdpConnection>, port: u16) -> Self {
+    pub fn new(live: Arc<LiveConnection>, port: u16) -> Self {
         Self {
-            conn,
+            live,
             port,
             tool_router: Self::tool_router(),
         }
@@ -120,14 +128,14 @@ impl CausewayServer {
         &self,
         Parameters(NavigateParams { url }): Parameters<NavigateParams>,
     ) -> Result<CallToolResult, McpError> {
-        cdp::execute(&self.conn, commands::navigate(&url))
+        self.execute_reconnect(commands::navigate(&url))
             .await
             .map_err(|e| McpError::internal_error(format!("Navigate failed: {e}"), None))?;
 
         // Wait a moment for the page to settle, then get the title
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
-        let title_result = cdp::execute(&self.conn, commands::evaluate("document.title"))
+        let title_result = self.execute_reconnect(commands::evaluate("document.title"))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to get title: {e}"), None))?;
 
@@ -137,7 +145,7 @@ impl CausewayServer {
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
 
-        let url_result = cdp::execute(&self.conn, commands::evaluate("window.location.href"))
+        let url_result = self.execute_reconnect(commands::evaluate("window.location.href"))
             .await
             .ok();
 
@@ -155,7 +163,7 @@ impl CausewayServer {
 
     #[tool(description = "Take a screenshot of the current page. Returns the image as base64 PNG.")]
     async fn screenshot(&self) -> Result<CallToolResult, McpError> {
-        let result = cdp::execute(&self.conn, commands::screenshot(None, "png"))
+        let result = self.execute_reconnect(commands::screenshot(None, "png"))
             .await
             .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
 
@@ -172,7 +180,7 @@ impl CausewayServer {
 
     #[tool(description = "Read the text content of the current page. Returns the visible text.")]
     async fn read_page(&self) -> Result<CallToolResult, McpError> {
-        let result = cdp::execute(&self.conn, commands::evaluate("document.body.innerText"))
+        let result = self.execute_reconnect(commands::evaluate("document.body.innerText"))
             .await
             .map_err(|e| McpError::internal_error(format!("Read page failed: {e}"), None))?;
 
@@ -197,7 +205,7 @@ impl CausewayServer {
         &self,
         Parameters(EvaluateJsParams { expression }): Parameters<EvaluateJsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = cdp::execute(&self.conn, commands::evaluate(&expression))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&expression))
             .await
             .map_err(|e| McpError::internal_error(format!("JS evaluation failed: {e}"), None))?;
 
@@ -233,20 +241,31 @@ impl CausewayServer {
         &self,
         Parameters(ClickParams { selector }): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Scroll into view, then get the element's center coordinates
+        // Find first visible, in-viewport element matching the selector
         let js = format!(
             r#"(async () => {{
-                const el = document.querySelector({sel});
-                if (!el) return null;
-                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-                const rect = el.getBoundingClientRect();
-                return {{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }};
+                const els = document.querySelectorAll({sel});
+                if (!els.length) return null;
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                for (const el of els) {{
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;
+                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const rect = el.getBoundingClientRect();
+                    const cx = rect.x + rect.width / 2;
+                    const cy = rect.y + rect.height / 2;
+                    if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                        return {{ x: cx, y: cy }};
+                    }}
+                }}
+                return null;
             }})()"#,
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = self.execute_reconnect(commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -254,12 +273,12 @@ impl CausewayServer {
             .get("result")
             .and_then(|r| r.get("value"))
             .ok_or_else(|| {
-                McpError::invalid_params(format!("Element not found: {selector}"), None)
+                McpError::invalid_params(format!("No visible, in-viewport element found for: {selector}"), None)
             })?;
 
         if coords.is_null() {
             return Err(McpError::invalid_params(
-                format!("Element not found: {selector}"),
+                format!("No visible, in-viewport element found for: {selector}"),
                 None,
             ));
         }
@@ -267,12 +286,82 @@ impl CausewayServer {
         let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-        cdp::execute_sequence(&self.conn, commands::click(x, y))
+        cdp::execute_sequence(&*self.live.get().await, commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Clicked '{selector}' at ({x:.0}, {y:.0})"
+        ))]))
+    }
+
+    #[tool(description = "Click an element by its visible text content. More reliable than CSS selectors on dynamic UIs. Finds the first visible, in-viewport element whose text contains the search string.")]
+    async fn click_text(
+        &self,
+        Parameters(ClickTextParams { text, tag }): Parameters<ClickTextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let tag_filter = tag.as_deref().unwrap_or("*");
+
+        let js = format!(
+            r#"(async () => {{
+                const searchText = {text}.toLowerCase();
+                const els = document.querySelectorAll({tag});
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                for (const el of els) {{
+                    const elText = el.textContent.trim().toLowerCase();
+                    if (!elText.includes(searchText)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;
+                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const rect = el.getBoundingClientRect();
+                    const cx = rect.x + rect.width / 2;
+                    const cy = rect.y + rect.height / 2;
+                    if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                        return {{ x: cx, y: cy, matched: el.textContent.trim().substring(0, 80) }};
+                    }}
+                }}
+                return null;
+            }})()"#,
+            text = serde_json::to_string(&text).unwrap(),
+            tag = serde_json::to_string(tag_filter).unwrap()
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let coords = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("No visible element found containing text: \"{text}\""),
+                    None,
+                )
+            })?;
+
+        if coords.is_null() {
+            return Err(McpError::invalid_params(
+                format!("No visible element found containing text: \"{text}\""),
+                None,
+            ));
+        }
+
+        let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let matched = coords
+            .get("matched")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+
+        cdp::execute_sequence(&*self.live.get().await, commands::click(x, y))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Clicked element with text \"{matched}\" at ({x:.0}, {y:.0})"
         ))]))
     }
 
@@ -295,7 +384,7 @@ impl CausewayServer {
             clear = should_clear
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to focus element: {e}"), None))?;
 
@@ -313,7 +402,7 @@ impl CausewayServer {
         }
 
         // Type each character (replaces selected text if clear was used)
-        cdp::execute_sequence(&self.conn, commands::type_text(&text))
+        cdp::execute_sequence(&*self.live.get().await, commands::type_text(&text))
             .await
             .map_err(|e| McpError::internal_error(format!("Type failed: {e}"), None))?;
 
@@ -342,7 +431,7 @@ impl CausewayServer {
                 sel = serde_json::to_string(&selector).unwrap()
             );
 
-            let result = cdp::execute(&self.conn, commands::evaluate(&js))
+            let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Wait check failed: {e}"), None))?;
 
@@ -375,7 +464,7 @@ impl CausewayServer {
         let scroll_x = x.unwrap_or(0.0);
         let scroll_y = y.unwrap_or(0.0);
 
-        cdp::execute(&self.conn, commands::scroll(scroll_x, scroll_y))
+        cdp::execute(&*self.live.get().await, commands::scroll(scroll_x, scroll_y))
             .await
             .map_err(|e| McpError::internal_error(format!("Scroll failed: {e}"), None))?;
 
@@ -386,7 +475,7 @@ impl CausewayServer {
 
     #[tool(description = "Navigate back in browser history.")]
     async fn back(&self) -> Result<CallToolResult, McpError> {
-        cdp::execute(&self.conn, commands::go_back())
+        cdp::execute(&*self.live.get().await, commands::go_back())
             .await
             .map_err(|e| McpError::internal_error(format!("Back failed: {e}"), None))?;
 
@@ -399,7 +488,7 @@ impl CausewayServer {
 
     #[tool(description = "Navigate forward in browser history.")]
     async fn forward(&self) -> Result<CallToolResult, McpError> {
-        cdp::execute(&self.conn, commands::go_forward())
+        cdp::execute(&*self.live.get().await, commands::go_forward())
             .await
             .map_err(|e| McpError::internal_error(format!("Forward failed: {e}"), None))?;
 
@@ -427,7 +516,7 @@ impl CausewayServer {
             val = serde_json::to_string(&value).unwrap()
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Select failed: {e}"), None))?;
 
@@ -470,7 +559,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Submit failed: {e}"), None))?;
 
@@ -510,7 +599,7 @@ impl CausewayServer {
             };
         })()"#;
 
-        let result = cdp::execute(&self.conn, commands::evaluate(js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(js))
             .await
             .map_err(|e| McpError::internal_error(format!("WebMCP check failed: {e}"), None))?;
 
@@ -615,7 +704,7 @@ impl CausewayServer {
             depth = depth
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Inspect failed: {e}"), None))?;
 
@@ -674,7 +763,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Query failed: {e}"), None))?;
 
@@ -721,21 +810,75 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    /// Execute a CDP command, retrying once with reconnect on connection failure.
+    async fn exec_with_reconnect(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, cdp::CdpError> {
+        match cdp::send(&*self.live.get().await, method, params.clone()).await {
+            Ok(val) => Ok(val),
+            Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) => {
+                self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
+                cdp::send(&*self.live.get().await, method, params).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Execute a CDP command (built by commands.rs) with reconnect on failure.
+    async fn execute_reconnect(&self, command: (&str, serde_json::Value)) -> Result<serde_json::Value, cdp::CdpError> {
+        let (method, params) = command;
+        self.exec_with_reconnect(method, params).await
+    }
+
+    /// Reconnect CDP to any available page target.
+    async fn try_reconnect(&self) -> Result<(), String> {
+        tracing::info!("Attempting CDP reconnect...");
+        let ws_url = crate::browser::find_target_ws_url(self.port, None)
+            .await
+            .map_err(|e| format!("No browser target available: {e}"))?;
+        let new_conn = cdp::connect_to_target(&ws_url)
+            .await
+            .map_err(|e| format!("Reconnect failed: {e}"))?;
+        self.live.swap(new_conn).await;
+        tracing::info!("CDP reconnected to {ws_url}");
+        Ok(())
+    }
+
+    /// Reconnect CDP to a specific target by ID.
+    async fn reconnect_to_target(&self, target_id: &str) -> Result<(), McpError> {
+        let ws_url = crate::browser::find_target_ws_url(self.port, Some(target_id))
+            .await
+            .map_err(|e| McpError::internal_error(
+                format!("Could not find WebSocket URL for target {target_id}: {e}"),
+                None,
+            ))?;
+        let new_conn = cdp::connect_to_target(&ws_url)
+            .await
+            .map_err(|e| McpError::internal_error(
+                format!("Failed to connect to target {target_id}: {e}"),
+                None,
+            ))?;
+        self.live.swap(new_conn).await;
+        Ok(())
+    }
+
     #[tool(description = "Switch to a browser tab by its target ID (from list_tabs).")]
     async fn switch_tab(
         &self,
         Parameters(SwitchTabParams { target_id }): Parameters<SwitchTabParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Visually activate the tab
         cdp::send(
-            &self.conn,
+            &*self.live.get().await,
             "Target.activateTarget",
             serde_json::json!({ "targetId": target_id }),
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("Switch tab failed: {e}"), None))?;
+        .map_err(|e| McpError::internal_error(format!("Activate tab failed: {e}"), None))?;
+
+        // Reconnect CDP to the new tab's target
+        self.reconnect_to_target(&target_id).await?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Switched to tab {target_id}"
+            "Switched to tab {target_id} (CDP reconnected)"
         ))]))
     }
 
@@ -747,7 +890,7 @@ impl CausewayServer {
         let target_url = url.as_deref().unwrap_or("about:blank");
 
         let result = cdp::send(
-            &self.conn,
+            &*self.live.get().await,
             "Target.createTarget",
             serde_json::json!({ "url": target_url }),
         )
@@ -757,10 +900,17 @@ impl CausewayServer {
         let target_id = result
             .get("targetId")
             .and_then(|v| v.as_str())
-            .unwrap_or("(unknown)");
+            .unwrap_or("(unknown)")
+            .to_owned();
+
+        // Give the new tab a moment to register its debug endpoint
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Reconnect CDP to the new tab
+        self.reconnect_to_target(&target_id).await?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Opened new tab [{target_id}]: {target_url}"
+            "Opened and switched to new tab [{target_id}]: {target_url}"
         ))]))
     }
 
@@ -770,7 +920,7 @@ impl CausewayServer {
         Parameters(CloseTabParams { target_id }): Parameters<CloseTabParams>,
     ) -> Result<CallToolResult, McpError> {
         cdp::send(
-            &self.conn,
+            &*self.live.get().await,
             "Target.closeTarget",
             serde_json::json!({ "targetId": target_id }),
         )

@@ -1,0 +1,4 @@
+[browser]
+executable = "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+port = 9222
+use_existing_profile = true

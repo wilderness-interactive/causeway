@@ -16,18 +16,28 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         return Ok(LaunchResult::Existing { ws_url });
     }
 
+    // Chromium ignores --remote-debugging-port when attaching to an already-running
+    // instance using the same profile. We must use a separate user-data-dir to guarantee
+    // a fresh instance that actually enables CDP.
+    //
+    // The Causeway profile dir persists across runs so bookmarks/logins survive,
+    // but it's separate from your daily browser profile.
+    let causeway_profile = std::env::temp_dir().join("causeway-profile");
+
     let mut args = vec![
         format!("--remote-debugging-port={}", config.port),
+        format!("--user-data-dir={}", causeway_profile.display()),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
     ];
 
-    if !config.use_existing_profile {
-        let temp_dir = std::env::temp_dir().join("causeway-profile");
-        args.push(format!("--user-data-dir={}", temp_dir.display()));
+    // Restore last session so tabs persist across Causeway restarts
+    if config.restore_session {
+        args.push("--restore-last-session".to_owned());
     }
 
     tracing::info!("Launching browser: {}", config.executable);
+    tracing::info!("Profile: {}", causeway_profile.display());
     let child = Command::new(&config.executable)
         .args(&args)
         .spawn()

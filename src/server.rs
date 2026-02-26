@@ -150,6 +150,57 @@ pub struct GetCookiesParams {
     pub url: Option<String>,
 }
 
+// -- Shared JS helpers --
+
+/// Build JS that finds the first visible, in-viewport element matching a selector.
+/// Returns JS that resolves to `{ x, y }` or `null`.
+fn js_find_visible_element(selector: &str) -> String {
+    format!(
+        r#"(async () => {{
+            const els = document.querySelectorAll({sel});
+            if (!els.length) return null;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            for (const el of els) {{
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                const rect = el.getBoundingClientRect();
+                const cx = rect.x + rect.width / 2;
+                const cy = rect.y + rect.height / 2;
+                if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                    return {{ x: cx, y: cy }};
+                }}
+            }}
+            return null;
+        }})()"#,
+        sel = serde_json::to_string(selector).unwrap()
+    )
+}
+
+/// Build JS that finds the first visible element matching selector and focuses it.
+/// Optionally selects all text (for clearing). Returns JS that resolves to `true` or `false`.
+fn js_focus_visible_element(selector: &str, should_clear: bool) -> String {
+    format!(
+        r#"(async () => {{
+            const els = document.querySelectorAll({sel});
+            for (const el of els) {{
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                el.focus();
+                if ({clear}) el.select();
+                return true;
+            }}
+            return false;
+        }})()"#,
+        sel = serde_json::to_string(selector).unwrap(),
+        clear = should_clear
+    )
+}
+
 // -- MCP Server --
 
 #[derive(Debug, Clone)]
@@ -374,29 +425,7 @@ impl CausewayServer {
         &self,
         Parameters(ClickParams { selector }): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Find first visible, in-viewport element matching the selector
-        let js = format!(
-            r#"(async () => {{
-                const els = document.querySelectorAll({sel});
-                if (!els.length) return null;
-                const vw = window.innerWidth;
-                const vh = window.innerHeight;
-                for (const el of els) {{
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) continue;
-                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                    const rect = el.getBoundingClientRect();
-                    const cx = rect.x + rect.width / 2;
-                    const cy = rect.y + rect.height / 2;
-                    if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
-                        return {{ x: cx, y: cy }};
-                    }}
-                }}
-                return null;
-            }})()"#,
-            sel = serde_json::to_string(&selector).unwrap()
-        );
+        let js = js_find_visible_element(&selector);
 
         let result = self.execute_reconnect(commands::evaluate(&js))
             .await
@@ -503,25 +532,8 @@ impl CausewayServer {
         &self,
         Parameters(TypeTextParams { selector, text, clear }): Parameters<TypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Find the first visible matching element, focus it
         let should_clear = clear.unwrap_or(false);
-        let js = format!(
-            r#"(async () => {{
-                const els = document.querySelectorAll({sel});
-                for (const el of els) {{
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) continue;
-                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                    el.focus();
-                    if ({clear}) el.select();
-                    return true;
-                }}
-                return false;
-            }})()"#,
-            sel = serde_json::to_string(&selector).unwrap(),
-            clear = should_clear
-        );
+        let js = js_focus_visible_element(&selector, should_clear);
 
         let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await
@@ -708,29 +720,7 @@ impl CausewayServer {
         &self,
         Parameters(HoverParams { selector }): Parameters<HoverParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Use same smart selection as click — find first visible, in-viewport element
-        let js = format!(
-            r#"(async () => {{
-                const els = document.querySelectorAll({sel});
-                if (!els.length) return null;
-                const vw = window.innerWidth;
-                const vh = window.innerHeight;
-                for (const el of els) {{
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) continue;
-                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                    const rect = el.getBoundingClientRect();
-                    const cx = rect.x + rect.width / 2;
-                    const cy = rect.y + rect.height / 2;
-                    if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
-                        return {{ x: cx, y: cy }};
-                    }}
-                }}
-                return null;
-            }})()"#,
-            sel = serde_json::to_string(&selector).unwrap()
-        );
+        let js = js_find_visible_element(&selector);
 
         let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
             .await

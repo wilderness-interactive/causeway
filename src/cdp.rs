@@ -244,5 +244,6 @@ pub async fn connect_to_target(ws_url: &str) -> Result<CdpConnection, CdpError> 
     execute(&conn, crate::commands::enable_page()).await?;
     execute(&conn, crate::commands::enable_dom()).await?;
     execute(&conn, crate::commands::enable_runtime()).await?;
+    execute(&conn, crate::commands::enable_network()).await?;
     Ok(conn)
 }

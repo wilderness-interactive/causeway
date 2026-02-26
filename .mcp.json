@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "causeway": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "E:\\Claude Code\\webmcp\\target\\debug\\causeway.exe"],
+      "cwd": "E:\\Claude Code\\webmcp"
+    }
+  }
+}

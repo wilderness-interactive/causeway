@@ -9,7 +9,8 @@ pub struct Config {
 pub struct BrowserConfig {
     pub executable: String,
     pub port: u16,
-    pub use_existing_profile: bool,
+    #[serde(default)]
+    pub restore_session: bool,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {

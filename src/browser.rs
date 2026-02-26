@@ -16,28 +16,38 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         return Ok(LaunchResult::Existing { ws_url });
     }
 
-    // Chromium ignores --remote-debugging-port when attaching to an already-running
-    // instance using the same profile. We must use a separate user-data-dir to guarantee
-    // a fresh instance that actually enables CDP.
-    //
-    // The Causeway profile dir persists across runs so bookmarks/logins survive,
-    // but it's separate from your daily browser profile.
-    let causeway_profile = std::env::temp_dir().join("causeway-profile");
+    // If using the default profile (dedicated_profile = false), we need to kill any
+    // existing browser first. Chromium ignores --remote-debugging-port when attaching
+    // to an already-running instance using the same profile.
+    if !config.dedicated_profile {
+        let exe_name = extract_exe_name(&config.executable);
+        if is_process_running(&exe_name) {
+            tracing::info!("Killing existing {exe_name} to relaunch with CDP");
+            kill_process(&exe_name);
+            // Give the OS a moment to release the profile lock
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
 
     let mut args = vec![
         format!("--remote-debugging-port={}", config.port),
-        format!("--user-data-dir={}", causeway_profile.display()),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
     ];
 
-    // Restore last session so tabs persist across Causeway restarts
+    // Only use a separate profile dir when explicitly requested
+    if config.dedicated_profile {
+        let causeway_profile = std::env::temp_dir().join("causeway-profile");
+        tracing::info!("Profile: {}", causeway_profile.display());
+        args.push(format!("--user-data-dir={}", causeway_profile.display()));
+    }
+
+    // Restore last session so tabs persist across restarts
     if config.restore_session {
         args.push("--restore-last-session".to_owned());
     }
 
     tracing::info!("Launching browser: {}", config.executable);
-    tracing::info!("Profile: {}", causeway_profile.display());
     let child = Command::new(&config.executable)
         .args(&args)
         .spawn()
@@ -45,6 +55,37 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
 
     let ws_url = poll_until_ready(config.port).await?;
     Ok(LaunchResult::Spawned { child, ws_url })
+}
+
+/// Extract just the executable filename from a full path (e.g. "brave.exe" from the full path)
+fn extract_exe_name(executable: &str) -> String {
+    std::path::Path::new(executable)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("brave.exe")
+        .to_owned()
+}
+
+/// Check if a process with this name is currently running (Windows)
+fn is_process_running(exe_name: &str) -> bool {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("IMAGENAME eq {exe_name}"), "/NH"])
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains(exe_name)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Kill all processes with this name (Windows)
+fn kill_process(exe_name: &str) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", exe_name])
+        .output();
 }
 
 async fn try_connect_existing(port: u16) -> Result<String, ()> {

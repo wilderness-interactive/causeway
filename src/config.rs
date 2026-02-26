@@ -11,6 +11,8 @@ pub struct BrowserConfig {
     pub port: u16,
     #[serde(default)]
     pub restore_session: bool,
+    #[serde(default)]
+    pub dedicated_profile: bool,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {

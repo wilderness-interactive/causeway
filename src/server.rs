@@ -139,6 +139,12 @@ pub struct FillFormParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitForNavigationParams {
+    #[schemars(description = "Maximum time to wait in milliseconds (default: 10000)")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetCookiesParams {
     #[schemars(description = "Optional URL filter — only return cookies for this domain. If omitted, returns cookies for the current page.")]
     pub url: Option<String>,
@@ -805,6 +811,82 @@ impl CausewayServer {
         }
     }
 
+    #[tool(description = "Get the current page URL and title without navigating.")]
+    async fn get_url(&self) -> Result<CallToolResult, McpError> {
+        let result = cdp::execute(
+            &*self.live.get().await,
+            commands::evaluate("JSON.stringify({ url: window.location.href, title: document.title })"),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Get URL failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+
+        let parsed: serde_json::Value = serde_json::from_str(value).unwrap_or_default();
+        let url = parsed.get("url").and_then(|v| v.as_str()).unwrap_or("(unknown)");
+        let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("(unknown)");
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "URL: {url}\nTitle: {title}"
+        ))]))
+    }
+
+    #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Polls document.readyState until 'complete'. Useful for SPAs and full page loads.")]
+    async fn wait_for_navigation(
+        &self,
+        Parameters(WaitForNavigationParams { timeout_ms }): Parameters<WaitForNavigationParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let timeout = timeout_ms.unwrap_or(10000);
+        let interval = 200u64;
+        let max_attempts = timeout / interval;
+
+        for _ in 0..max_attempts {
+            let result = cdp::execute(
+                &*self.live.get().await,
+                commands::evaluate("document.readyState"),
+            )
+            .await
+            .map_err(|e| McpError::internal_error(format!("Navigation check failed: {e}"), None))?;
+
+            let state = result
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("loading");
+
+            if state == "complete" {
+                let title_result = cdp::execute(
+                    &*self.live.get().await,
+                    commands::evaluate("document.title"),
+                )
+                .await
+                .ok();
+
+                let title = title_result
+                    .as_ref()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|r| r.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(unknown)");
+
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Page loaded: {title}"
+                ))]));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+        }
+
+        Err(McpError::internal_error(
+            format!("Navigation did not complete within {timeout}ms"),
+            None,
+        ))
+    }
+
     #[tool(description = "Navigate back in browser history.")]
     async fn back(&self) -> Result<CallToolResult, McpError> {
         cdp::execute(&*self.live.get().await, commands::go_back())
@@ -1125,13 +1207,24 @@ impl CausewayServer {
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to parse tabs: {e}"), None))?;
 
+        // Get current page URL to mark the active CDP tab
+        let current_url = cdp::execute(
+            &*self.live.get().await,
+            commands::evaluate("window.location.href"),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()));
+
         let mut output = String::new();
         for target in &targets {
             if target.get("type").and_then(|t| t.as_str()) == Some("page") {
                 let id = target.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let title = target.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
-                let url = target.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-                output.push_str(&format!("[{id}] {title}\n  {url}\n\n"));
+                let tab_url = target.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                let active = current_url.as_deref() == Some(tab_url);
+                let marker = if active { " *" } else { "" };
+                output.push_str(&format!("[{id}]{marker} {title}\n  {tab_url}\n\n"));
             }
         }
 

@@ -36,6 +36,8 @@ pub struct TypeTextParams {
     pub selector: String,
     #[schemars(description = "The text to type")]
     pub text: String,
+    #[schemars(description = "Clear the field before typing (select all + delete). Default: false")]
+    pub clear: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -60,6 +62,38 @@ pub struct SelectOptionParams {
     pub selector: String,
     #[schemars(description = "The value attribute of the option to select")]
     pub value: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SwitchTabParams {
+    #[schemars(description = "The target ID of the tab to switch to (from list_tabs)")]
+    pub target_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NewTabParams {
+    #[schemars(description = "URL to open in the new tab (default: about:blank)")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CloseTabParams {
+    #[schemars(description = "The target ID of the tab to close (from list_tabs)")]
+    pub target_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InspectParams {
+    #[schemars(description = "CSS selector to inspect (default: body)")]
+    pub selector: Option<String>,
+    #[schemars(description = "Maximum depth to traverse (default: 4)")]
+    pub max_depth: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct QueryElementsParams {
+    #[schemars(description = "CSS selector to find matching elements")]
+    pub selector: String,
 }
 
 // -- MCP Server --
@@ -199,11 +233,13 @@ impl CausewayServer {
         &self,
         Parameters(ClickParams { selector }): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Get the element's center coordinates via JS
+        // Scroll into view, then get the element's center coordinates
         let js = format!(
-            r#"(() => {{
+            r#"(async () => {{
                 const el = document.querySelector({sel});
                 if (!el) return null;
+                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
                 const rect = el.getBoundingClientRect();
                 return {{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }};
             }})()"#,
@@ -243,17 +279,20 @@ impl CausewayServer {
     #[tool(description = "Type text into an element on the page. Focuses the element first, then types character by character.")]
     async fn type_text(
         &self,
-        Parameters(TypeTextParams { selector, text }): Parameters<TypeTextParams>,
+        Parameters(TypeTextParams { selector, text, clear }): Parameters<TypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Focus the element first
+        // Focus the element (and optionally select all text for clearing)
+        let should_clear = clear.unwrap_or(false);
         let js = format!(
             r#"(() => {{
                 const el = document.querySelector({sel});
                 if (!el) return false;
                 el.focus();
+                if ({clear}) el.select();
                 return true;
             }})()"#,
-            sel = serde_json::to_string(&selector).unwrap()
+            sel = serde_json::to_string(&selector).unwrap(),
+            clear = should_clear
         );
 
         let result = cdp::execute(&self.conn, commands::evaluate(&js))
@@ -273,13 +312,14 @@ impl CausewayServer {
             ));
         }
 
-        // Type each character
+        // Type each character (replaces selected text if clear was used)
         cdp::execute_sequence(&self.conn, commands::type_text(&text))
             .await
             .map_err(|e| McpError::internal_error(format!("Type failed: {e}"), None))?;
 
+        let action = if should_clear { "Cleared and typed" } else { "Typed" };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Typed {len} characters into '{selector}'",
+            "{action} {len} characters into '{selector}'",
             len = text.len()
         ))]))
     }
@@ -508,6 +548,148 @@ impl CausewayServer {
         ))]))
     }
 
+    #[tool(description = "Inspect the DOM tree starting from a CSS selector. Returns a compact structural view with tag names, key attributes (id, class, href, type, name, value, role, aria-label), and truncated text content. Essential for understanding page structure without screenshots.")]
+    async fn inspect(
+        &self,
+        Parameters(InspectParams { selector, max_depth }): Parameters<InspectParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let sel = selector.as_deref().unwrap_or("body");
+        let depth = max_depth.unwrap_or(4);
+
+        let js = format!(
+            r#"(() => {{
+                const ATTRS = ['id','class','href','src','type','name','value','role','aria-label','placeholder','action','method','for','alt','title'];
+                const MAX_TEXT = 80;
+                const MAX_CHILDREN = 50;
+
+                function walk(el, depth, maxDepth) {{
+                    if (depth > maxDepth) return '  '.repeat(depth) + '...';
+                    const tag = el.tagName.toLowerCase();
+                    let attrs = '';
+                    for (const a of ATTRS) {{
+                        const v = el.getAttribute(a);
+                        if (v) attrs += ' ' + a + '="' + v.substring(0, 60) + '"';
+                    }}
+                    const indent = '  '.repeat(depth);
+                    let result = indent + '<' + tag + attrs + '>';
+
+                    const children = el.children;
+                    const textContent = el.childNodes.length === 1 && el.childNodes[0].nodeType === 3
+                        ? el.childNodes[0].textContent.trim() : null;
+
+                    if (textContent && textContent.length > 0) {{
+                        const t = textContent.length > MAX_TEXT
+                            ? textContent.substring(0, MAX_TEXT) + '...' : textContent;
+                        result += t + '</' + tag + '>';
+                        return result;
+                    }}
+
+                    if (children.length === 0) {{
+                        const t = el.textContent.trim();
+                        if (t.length > 0) {{
+                            const truncated = t.length > MAX_TEXT ? t.substring(0, MAX_TEXT) + '...' : t;
+                            result += truncated + '</' + tag + '>';
+                        }} else {{
+                            result = indent + '<' + tag + attrs + ' />';
+                        }}
+                        return result;
+                    }}
+
+                    result += '\n';
+                    const len = Math.min(children.length, MAX_CHILDREN);
+                    for (let i = 0; i < len; i++) {{
+                        result += walk(children[i], depth + 1, maxDepth) + '\n';
+                    }}
+                    if (children.length > MAX_CHILDREN) {{
+                        result += indent + '  ... +' + (children.length - MAX_CHILDREN) + ' more\n';
+                    }}
+                    result += indent + '</' + tag + '>';
+                    return result;
+                }}
+
+                const root = document.querySelector({sel});
+                if (!root) return null;
+                return walk(root, 0, {depth});
+            }})()"#,
+            sel = serde_json::to_string(sel).unwrap(),
+            depth = depth
+        );
+
+        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Inspect failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str());
+
+        match value {
+            Some(tree) => {
+                let truncated = if tree.len() > 15000 {
+                    format!("{}...\n\n[Truncated — {} total chars]", &tree[..15000], tree.len())
+                } else {
+                    tree.to_owned()
+                };
+                Ok(CallToolResult::success(vec![Content::text(truncated)]))
+            }
+            None => Err(McpError::invalid_params(
+                format!("Element not found: {sel}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(description = "Find all elements matching a CSS selector and return their tag, text content, key attributes, and count. Useful for finding interactive elements, links, buttons, form fields, etc.")]
+    async fn query_elements(
+        &self,
+        Parameters(QueryElementsParams { selector }): Parameters<QueryElementsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = format!(
+            r#"(() => {{
+                const els = document.querySelectorAll({sel});
+                const results = [];
+                const MAX = 50;
+                for (let i = 0; i < Math.min(els.length, MAX); i++) {{
+                    const el = els[i];
+                    const rect = el.getBoundingClientRect();
+                    const entry = {{
+                        index: i,
+                        tag: el.tagName.toLowerCase(),
+                        text: el.textContent.trim().substring(0, 100),
+                        id: el.id || undefined,
+                        class: el.className || undefined,
+                        href: el.getAttribute('href') || undefined,
+                        type: el.getAttribute('type') || undefined,
+                        name: el.getAttribute('name') || undefined,
+                        value: el.value || undefined,
+                        visible: rect.width > 0 && rect.height > 0,
+                    }};
+                    // Remove undefined keys
+                    Object.keys(entry).forEach(k => entry[k] === undefined && delete entry[k]);
+                    results.push(entry);
+                }}
+                return {{ total: els.length, shown: Math.min(els.length, MAX), elements: results }};
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap()
+        );
+
+        let result = cdp::execute(&self.conn, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Query failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        let output = serde_json::to_string_pretty(&value)
+            .unwrap_or_else(|_| format!("{value:?}"));
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     #[tool(description = "List all open browser tabs with their titles, URLs, and target IDs.")]
     async fn list_tabs(&self) -> Result<CallToolResult, McpError> {
         let url = format!("http://localhost:{}/json", self.port);
@@ -537,6 +719,67 @@ impl CausewayServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Switch to a browser tab by its target ID (from list_tabs).")]
+    async fn switch_tab(
+        &self,
+        Parameters(SwitchTabParams { target_id }): Parameters<SwitchTabParams>,
+    ) -> Result<CallToolResult, McpError> {
+        cdp::send(
+            &self.conn,
+            "Target.activateTarget",
+            serde_json::json!({ "targetId": target_id }),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Switch tab failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Switched to tab {target_id}"
+        ))]))
+    }
+
+    #[tool(description = "Open a new browser tab, optionally with a URL.")]
+    async fn new_tab(
+        &self,
+        Parameters(NewTabParams { url }): Parameters<NewTabParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_url = url.as_deref().unwrap_or("about:blank");
+
+        let result = cdp::send(
+            &self.conn,
+            "Target.createTarget",
+            serde_json::json!({ "url": target_url }),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("New tab failed: {e}"), None))?;
+
+        let target_id = result
+            .get("targetId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Opened new tab [{target_id}]: {target_url}"
+        ))]))
+    }
+
+    #[tool(description = "Close a browser tab by its target ID (from list_tabs).")]
+    async fn close_tab(
+        &self,
+        Parameters(CloseTabParams { target_id }): Parameters<CloseTabParams>,
+    ) -> Result<CallToolResult, McpError> {
+        cdp::send(
+            &self.conn,
+            "Target.closeTarget",
+            serde_json::json!({ "targetId": target_id }),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Close tab failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Closed tab {target_id}"
+        ))]))
     }
 }
 

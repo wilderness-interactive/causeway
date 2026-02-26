@@ -26,24 +26,6 @@ pub fn evaluate(expression: &str) -> (&'static str, Value) {
     )
 }
 
-/// Get the root DOM document. Returns ("DOM.getDocument", params).
-pub fn get_document() -> (&'static str, Value) {
-    ("DOM.getDocument", json!({}))
-}
-
-/// Query a selector within a node. Returns ("DOM.querySelector", params).
-pub fn query_selector(node_id: i64, selector: &str) -> (&'static str, Value) {
-    (
-        "DOM.querySelector",
-        json!({ "nodeId": node_id, "selector": selector }),
-    )
-}
-
-/// Get the box model (position/size) of a node. Returns ("DOM.getBoxModel", params).
-pub fn get_box_model(node_id: i64) -> (&'static str, Value) {
-    ("DOM.getBoxModel", json!({ "nodeId": node_id }))
-}
-
 /// Dispatch a mouse event. Returns ("Input.dispatchMouseEvent", params).
 pub fn mouse_event(event_type: &str, x: f64, y: f64, button: &str, click_count: u32) -> (&'static str, Value) {
     (

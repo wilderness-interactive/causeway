@@ -31,6 +31,8 @@ pub struct CdpErrorData {
     pub message: String,
 }
 
+// Event data — reserved for WebMCP event listening
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CdpEvent {
     pub method: String,
@@ -42,6 +44,7 @@ pub struct CdpEvent {
 pub struct CdpConnection {
     cmd_sender: mpsc::UnboundedSender<CdpCommand>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpErrorData>>>>>,
+    #[allow(dead_code)]
     event_sender: broadcast::Sender<CdpEvent>,
     next_id: AtomicU64,
 }
@@ -178,7 +181,8 @@ pub async fn send(conn: &CdpConnection, method: &str, params: Value) -> Result<V
     })
 }
 
-/// Subscribe to CDP events.
+/// Subscribe to CDP events — reserved for WebMCP event listening.
+#[allow(dead_code)]
 pub fn subscribe_events(conn: &CdpConnection) -> broadcast::Receiver<CdpEvent> {
     conn.event_sender.subscribe()
 }

@@ -14,7 +14,7 @@ Claude Code <--stdio/MCP--> causeway.exe <--WebSocket/CDP--> Brave
 
 ## Data Flow
 
-CDP commands are pure data: `fn navigate(url) -> (&str, Value)`. The CDP client routes by id (responses) or method (events). No OOP, no central state.
+CDP commands are pure data: `fn navigate(url) -> (&str, Value)`. The CDP client routes by id (responses) or method (events). No OOP, no central state. LiveConnection wraps a swappable Arc so tab switches and reconnects flow cleanly.
 
 ## Config
 

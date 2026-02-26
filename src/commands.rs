@@ -148,3 +148,7 @@ pub fn enable_dom() -> (&'static str, Value) {
 pub fn enable_runtime() -> (&'static str, Value) {
     ("Runtime.enable", json!({}))
 }
+
+pub fn enable_network() -> (&'static str, Value) {
+    ("Network.enable", json!({}))
+}

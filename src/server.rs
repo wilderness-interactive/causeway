@@ -124,6 +124,26 @@ pub struct GetAttributeParams {
     pub attribute: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadTextParams {
+    #[schemars(description = "CSS selector to read text from")]
+    pub selector: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FillFormParams {
+    #[schemars(description = "CSS selector of the form or container element")]
+    pub selector: String,
+    #[schemars(description = "JSON object mapping field names/selectors to values, e.g. {\"#email\": \"test@example.com\", \"#name\": \"John\"}")]
+    pub fields: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetCookiesParams {
+    #[schemars(description = "Optional URL filter — only return cookies for this domain. If omitted, returns cookies for the current page.")]
+    pub url: Option<String>,
+}
+
 // -- MCP Server --
 
 #[derive(Debug, Clone)]
@@ -218,6 +238,93 @@ impl CausewayServer {
         };
 
         Ok(CallToolResult::success(vec![Content::text(truncated)]))
+    }
+
+    #[tool(description = "Read text content from a specific element by CSS selector. More focused than read_page — avoids overwhelming output on complex pages.")]
+    async fn read_text(
+        &self,
+        Parameters(ReadTextParams { selector }): Parameters<ReadTextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = format!(
+            r#"(() => {{
+                const el = document.querySelector({sel});
+                if (!el) return null;
+                return el.innerText.trim();
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap()
+        );
+
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Read text failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        match value {
+            Some(v) if !v.is_null() => {
+                let text = v.as_str().unwrap_or("(non-text content)");
+                let truncated = if text.len() > 10000 {
+                    format!("{}...\n\n[Truncated — {} total characters]", &text[..10000], text.len())
+                } else {
+                    text.to_owned()
+                };
+                Ok(CallToolResult::success(vec![Content::text(truncated)]))
+            }
+            _ => Err(McpError::invalid_params(
+                format!("Element not found: {selector}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(description = "Get browser cookies, optionally filtered by URL. Uses CDP Network.getCookies for full cookie details including httpOnly and secure cookies not visible to JavaScript.")]
+    async fn get_cookies(
+        &self,
+        Parameters(GetCookiesParams { url }): Parameters<GetCookiesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let params = match &url {
+            Some(u) => serde_json::json!({ "urls": [u] }),
+            None => serde_json::json!({}),
+        };
+
+        let result = cdp::send(&*self.live.get().await, "Network.getCookies", params)
+            .await
+            .map_err(|e| McpError::internal_error(format!("Get cookies failed: {e}"), None))?;
+
+        let cookies = result
+            .get("cookies")
+            .and_then(|c| c.as_array());
+
+        match cookies {
+            Some(arr) => {
+                let summary: Vec<String> = arr.iter().map(|c| {
+                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let domain = c.get("domain").and_then(|v| v.as_str()).unwrap_or("?");
+                    let value_preview = c.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|v| if v.len() > 40 { format!("{}...", &v[..40]) } else { v.to_owned() })
+                        .unwrap_or_default();
+                    let secure = c.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let http_only = c.get("httpOnly").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let flags = format!("{}{}",
+                        if secure { "Secure " } else { "" },
+                        if http_only { "HttpOnly" } else { "" }
+                    );
+                    format!("{name} ({domain}) = {value_preview} [{flags}]")
+                }).collect();
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{} cookies:\n{}",
+                    arr.len(),
+                    summary.join("\n")
+                ))]))
+            }
+            None => Ok(CallToolResult::success(vec![Content::text(
+                "No cookies found".to_owned()
+            )])),
+        }
     }
 
     #[tool(description = "Execute JavaScript in the page context and return the result.")]
@@ -436,6 +543,97 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "{action} {len} characters into '{selector}'",
             len = text.len()
+        ))]))
+    }
+
+    #[tool(description = "Fill multiple form fields at once. Takes a JSON object mapping CSS selectors to values. Each field is focused, cleared, and typed into.")]
+    async fn fill_form(
+        &self,
+        Parameters(FillFormParams { selector, fields }): Parameters<FillFormParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let fields_json = serde_json::to_string(&fields).unwrap();
+        let js = format!(
+            r#"(async () => {{
+                const container = document.querySelector({sel});
+                if (!container) return {{ error: "Container not found" }};
+                const fields = {fields};
+                const results = [];
+                for (const [fieldSel, value] of Object.entries(fields)) {{
+                    const el = container.querySelector(fieldSel) || document.querySelector(fieldSel);
+                    if (!el) {{
+                        results.push({{ field: fieldSel, status: "not_found" }});
+                        continue;
+                    }}
+                    el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                    el.focus();
+                    el.select();
+                    results.push({{ field: fieldSel, status: "focused" }});
+                }}
+                return {{ ok: true, count: results.length, results: results }};
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap(),
+            fields = fields_json
+        );
+
+        let result = cdp::execute(&*self.live.get().await, commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Fill form failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        if let Some(v) = value {
+            if v.get("error").is_some() {
+                return Err(McpError::invalid_params(
+                    format!("Container not found: {selector}"),
+                    None,
+                ));
+            }
+        }
+
+        // Now type into each field sequentially
+        let mut filled = Vec::new();
+        for (field_sel, field_value) in &fields {
+            // Focus the field
+            let focus_js = format!(
+                r#"(() => {{
+                    const container = document.querySelector({sel});
+                    const el = container ? (container.querySelector({field}) || document.querySelector({field})) : document.querySelector({field});
+                    if (!el) return false;
+                    el.focus();
+                    el.select();
+                    return true;
+                }})()"#,
+                sel = serde_json::to_string(&selector).unwrap(),
+                field = serde_json::to_string(field_sel).unwrap()
+            );
+
+            let focus_result = cdp::execute(&*self.live.get().await, commands::evaluate(&focus_js))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Focus failed: {e}"), None))?;
+
+            let focused = focus_result
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if focused {
+                cdp::execute_sequence(&*self.live.get().await, commands::type_text(field_value))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Type failed: {e}"), None))?;
+                filled.push(format!("{field_sel}: \"{field_value}\""));
+            } else {
+                filled.push(format!("{field_sel}: NOT FOUND"));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Filled {} fields:\n{}",
+            filled.len(),
+            filled.join("\n")
         ))]))
     }
 

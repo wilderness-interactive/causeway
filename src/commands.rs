@@ -177,3 +177,86 @@ pub fn enable_runtime() -> (&'static str, Value) {
 pub fn enable_network() -> (&'static str, Value) {
     ("Network.enable", json!({}))
 }
+
+/// Double-click at coordinates (press+release count=1, then press+release count=2).
+pub fn double_click(x: f64, y: f64) -> Vec<(&'static str, Value)> {
+    vec![
+        mouse_event("mousePressed", x, y, "left", 1),
+        mouse_event("mouseReleased", x, y, "left", 1),
+        mouse_event("mousePressed", x, y, "left", 2),
+        mouse_event("mouseReleased", x, y, "left", 2),
+    ]
+}
+
+/// Drag from (from_x, from_y) to (to_x, to_y) with n intermediate mouse-move steps.
+pub fn drag(from_x: f64, from_y: f64, to_x: f64, to_y: f64, steps: u32) -> Vec<(&'static str, Value)> {
+    let mut cmds = Vec::new();
+    cmds.push(("Input.dispatchMouseEvent", json!({
+        "type": "mousePressed", "x": from_x, "y": from_y,
+        "button": "left", "buttons": 1, "clickCount": 1,
+    })));
+    let n = steps.max(1);
+    for i in 1..=n {
+        let t = i as f64 / n as f64;
+        cmds.push(("Input.dispatchMouseEvent", json!({
+            "type": "mouseMoved",
+            "x": from_x + (to_x - from_x) * t,
+            "y": from_y + (to_y - from_y) * t,
+            "button": "left", "buttons": 1,
+        })));
+    }
+    cmds.push(("Input.dispatchMouseEvent", json!({
+        "type": "mouseReleased", "x": to_x, "y": to_y,
+        "button": "left", "buttons": 0, "clickCount": 1,
+    })));
+    cmds
+}
+
+/// Set browser viewport dimensions.
+pub fn set_viewport(width: u32, height: u32) -> (&'static str, Value) {
+    ("Emulation.setDeviceMetricsOverride", json!({
+        "width": width, "height": height,
+        "deviceScaleFactor": 1, "mobile": false,
+    }))
+}
+
+/// Enable the Accessibility CDP domain.
+pub fn enable_accessibility() -> (&'static str, Value) {
+    ("Accessibility.enable", json!({}))
+}
+
+/// Get the full accessibility tree of the current page.
+pub fn get_full_ax_tree() -> (&'static str, Value) {
+    ("Accessibility.getFullAXTree", json!({}))
+}
+
+/// Handle a JavaScript dialog (alert/confirm/prompt/beforeunload).
+pub fn handle_dialog(accept: bool, prompt_text: Option<&str>) -> (&'static str, Value) {
+    let mut params = json!({ "accept": accept });
+    if let Some(text) = prompt_text {
+        params["promptText"] = json!(text);
+    }
+    ("Page.handleJavaScriptDialog", params)
+}
+
+/// Dispatch keyDown+keyUp with modifier keys. modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8.
+pub fn key_chord(key: &str, modifiers: u32) -> Vec<(&'static str, Value)> {
+    let code = if key.len() == 1 && key.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+        format!("Key{}", key.to_uppercase())
+    } else {
+        key.to_owned()
+    };
+    let vk = key.chars().next().map(|c| c as u32).unwrap_or(0);
+    vec![
+        ("Input.dispatchKeyEvent", json!({
+            "type": "keyDown", "modifiers": modifiers,
+            "key": key, "code": code,
+            "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+        })),
+        ("Input.dispatchKeyEvent", json!({
+            "type": "keyUp", "modifiers": modifiers,
+            "key": key, "code": code,
+            "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+        })),
+    ]
+}

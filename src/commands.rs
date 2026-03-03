@@ -135,6 +135,32 @@ pub fn scroll(x: f64, y: f64) -> (&'static str, Value) {
     evaluate(&format!("window.scrollBy({x}, {y})"))
 }
 
+/// Evaluate an expression, returning the remote object reference (not the value).
+/// Use when you need a nodeId for DOM operations.
+pub fn evaluate_ref(expression: &str) -> (&'static str, Value) {
+    (
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": false,
+        }),
+    )
+}
+
+/// Set files on a file input element via its Runtime objectId. Bypasses the OS file picker entirely.
+pub fn set_file_input_files(object_id: &str, files: &[String]) -> (&'static str, Value) {
+    ("DOM.setFileInputFiles", json!({ "objectId": object_id, "files": files }))
+}
+
+/// Set a cookie. url is used to infer domain/path if domain is not provided.
+pub fn set_cookie(name: &str, value: &str, url: Option<&str>, domain: Option<&str>, path: Option<&str>) -> (&'static str, Value) {
+    let mut params = json!({ "name": name, "value": value });
+    if let Some(u) = url    { params["url"]    = json!(u); }
+    if let Some(d) = domain { params["domain"] = json!(d); }
+    if let Some(p) = path   { params["path"]   = json!(p); }
+    ("Network.setCookie", params)
+}
+
 /// Enable required CDP domains.
 pub fn enable_page() -> (&'static str, Value) {
     ("Page.enable", json!({}))

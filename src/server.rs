@@ -150,6 +150,38 @@ pub struct GetCookiesParams {
     pub url: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitForTextParams {
+    #[schemars(description = "Text to wait for (case-insensitive substring match)")]
+    pub text: String,
+    #[schemars(description = "CSS selector of the container element to search within (default: body)")]
+    pub selector: Option<String>,
+    #[schemars(description = "Maximum time to wait in milliseconds (default: 5000)")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetCookieParams {
+    #[schemars(description = "Cookie name")]
+    pub name: String,
+    #[schemars(description = "Cookie value")]
+    pub value: String,
+    #[schemars(description = "URL to associate the cookie with (used to infer domain/path if not provided)")]
+    pub url: Option<String>,
+    #[schemars(description = "Cookie domain (e.g. \".example.com\")")]
+    pub domain: Option<String>,
+    #[schemars(description = "Cookie path (default: \"/\")")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UploadFileParams {
+    #[schemars(description = "CSS selector of the <input type=\"file\"> element")]
+    pub selector: String,
+    #[schemars(description = "Absolute path to the file to upload")]
+    pub file_path: String,
+}
+
 // -- Shared JS helpers --
 
 /// Build JS that finds the first visible, in-viewport element matching a selector.
@@ -207,6 +239,8 @@ fn js_focus_visible_element(selector: &str, should_clear: bool) -> String {
 pub struct CausewayServer {
     live: Arc<LiveConnection>,
     port: u16,
+    /// The target ID of the tab we consider "ours". try_reconnect returns here.
+    sticky_target: Arc<tokio::sync::Mutex<Option<String>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -216,6 +250,7 @@ impl CausewayServer {
         Self {
             live,
             port,
+            sticky_target: Arc::new(tokio::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -390,6 +425,125 @@ impl CausewayServer {
                 "No cookies found".to_owned()
             )])),
         }
+    }
+
+    #[tool(description = "Set a browser cookie. Use url to infer domain/path, or provide domain/path explicitly.")]
+    async fn set_cookie(
+        &self,
+        Parameters(SetCookieParams { name, value, url, domain, path }): Parameters<SetCookieParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self.execute_reconnect(commands::set_cookie(
+            &name,
+            &value,
+            url.as_deref(),
+            domain.as_deref(),
+            path.as_deref(),
+        ))
+        .await
+        .map_err(|e| McpError::internal_error(format!("Set cookie failed: {e}"), None))?;
+
+        let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        if success {
+            Ok(CallToolResult::success(vec![Content::text(format!("Set cookie: {name}"))]))
+        } else {
+            Err(McpError::internal_error(
+                format!("Cookie '{name}' was not set — check domain/url is valid for the current page"),
+                None,
+            ))
+        }
+    }
+
+    #[tool(description = "Wait until specific text appears on the page. Polls the container element every 200ms. Case-insensitive substring match.")]
+    async fn wait_for_text(
+        &self,
+        Parameters(WaitForTextParams { text, selector, timeout_ms }): Parameters<WaitForTextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let timeout = timeout_ms.unwrap_or(5000);
+        let interval = 200u64;
+        let max_attempts = timeout / interval;
+        let container = selector.as_deref().unwrap_or("body");
+        let needle = text.to_lowercase();
+
+        for _ in 0..max_attempts {
+            let js = format!(
+                r#"(() => {{
+                    const el = document.querySelector({sel});
+                    return el ? el.innerText.toLowerCase().includes({needle}) : false;
+                }})()"#,
+                sel = serde_json::to_string(container).unwrap(),
+                needle = serde_json::to_string(&needle).unwrap(),
+            );
+
+            let result = self.execute_reconnect(commands::evaluate(&js))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Text check failed: {e}"), None))?;
+
+            let found = result
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if found {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Text found: \"{text}\""
+                ))]));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+        }
+
+        Err(McpError::internal_error(
+            format!("Text \"{text}\" not found within {timeout}ms"),
+            None,
+        ))
+    }
+
+    #[tool(description = "Set files on a <input type=\"file\"> element via CDP — bypasses the OS file picker entirely, no dialog opens. Provide the absolute path to the file.")]
+    async fn upload_file(
+        &self,
+        Parameters(UploadFileParams { selector, file_path }): Parameters<UploadFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Verify the file exists before attempting to set it.
+        let path = std::path::Path::new(&file_path);
+        if !path.exists() {
+            return Err(McpError::invalid_params(
+                format!("File not found: {file_path}"),
+                None,
+            ));
+        }
+
+        // Get a remote object reference to the input element (not returnByValue — we need objectId).
+        let js = format!(
+            "document.querySelector({sel})",
+            sel = serde_json::to_string(&selector).unwrap()
+        );
+        let ref_result = self.execute_reconnect(commands::evaluate_ref(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let object_id = ref_result
+            .get("result")
+            .and_then(|r| r.get("objectId"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::invalid_params(
+                format!("Element not found: {selector}"),
+                None,
+            ))?
+            .to_owned();
+
+        // Set the file directly via objectId — no OS picker, no dialog, completely silent.
+        self.execute_reconnect(commands::set_file_input_files(&object_id, &[file_path.clone()]))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to set file: {e}"), None))?;
+
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&file_path);
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Uploaded '{filename}' to '{selector}'"
+        ))]))
     }
 
     #[tool(description = "Execute JavaScript in the page context and return the result.")]
@@ -1318,10 +1472,11 @@ impl CausewayServer {
         }
     }
 
-    /// Reconnect CDP to any available page target.
+    /// Reconnect CDP — returns to the sticky target if one is set, otherwise any page.
     async fn try_reconnect(&self) -> Result<(), String> {
         tracing::info!("Attempting CDP reconnect...");
-        let ws_url = crate::browser::find_target_ws_url(self.port, None)
+        let sticky = self.sticky_target.lock().await.clone();
+        let ws_url = crate::browser::find_target_ws_url(self.port, sticky.as_deref())
             .await
             .map_err(|e| format!("No browser target available: {e}"))?;
         let new_conn = cdp::connect_to_target(&ws_url)
@@ -1364,8 +1519,9 @@ impl CausewayServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Activate tab failed: {e}"), None))?;
 
-        // Reconnect CDP to the new tab's target
+        // Reconnect CDP to the new tab's target and pin it as sticky.
         self.reconnect_to_target(&target_id).await?;
+        *self.sticky_target.lock().await = Some(target_id.clone());
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Switched to tab {target_id} (CDP reconnected)"
@@ -1396,8 +1552,9 @@ impl CausewayServer {
         // Give the new tab a moment to register its debug endpoint
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Reconnect CDP to the new tab
+        // Reconnect CDP to the new tab and pin it as sticky.
         self.reconnect_to_target(&target_id).await?;
+        *self.sticky_target.lock().await = Some(target_id.clone());
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Opened and switched to new tab [{target_id}]: {target_url}"

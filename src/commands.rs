@@ -120,15 +120,14 @@ pub fn type_text(text: &str) -> Vec<(&'static str, Value)> {
         .collect()
 }
 
-/// Navigate back in history.
-pub fn go_back() -> (&'static str, Value) {
-    // Use JS since CDP doesn't have a direct "back" command
-    evaluate("window.history.back()")
+/// Get browser navigation history. Returns { currentIndex, entries: [{ id, url, title }] }.
+pub fn get_navigation_history() -> (&'static str, Value) {
+    ("Page.getNavigationHistory", json!({}))
 }
 
-/// Navigate forward in history.
-pub fn go_forward() -> (&'static str, Value) {
-    evaluate("window.history.forward()")
+/// Navigate to a specific history entry by its CDP entry ID.
+pub fn navigate_to_history_entry(entry_id: i64) -> (&'static str, Value) {
+    ("Page.navigateToHistoryEntry", json!({ "entryId": entry_id }))
 }
 
 /// Scroll the page by pixels.

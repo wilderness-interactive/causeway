@@ -63,6 +63,7 @@ pub enum CdpError {
     SendFailed,
     ResponseError { code: i64, message: String },
     ResponseDropped,
+    Timeout,
 }
 
 impl std::fmt::Display for CdpError {
@@ -74,6 +75,7 @@ impl std::fmt::Display for CdpError {
                 write!(f, "CDP error ({code}): {message}")
             }
             CdpError::ResponseDropped => write!(f, "CDP response channel dropped"),
+            CdpError::Timeout => write!(f, "CDP command timed out"),
         }
     }
 }
@@ -85,9 +87,13 @@ impl std::error::Error for CdpError {}
 pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
     use futures_util::{SinkExt, StreamExt};
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .map_err(|e| CdpError::ConnectionFailed(e.to_string()))?;
+    let (ws_stream, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| CdpError::ConnectionFailed("WebSocket connect timed out".to_owned()))?
+    .map_err(|e| CdpError::ConnectionFailed(e.to_string()))?;
 
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (cmd_sender, mut cmd_receiver) = mpsc::unbounded_channel::<CdpCommand>();
@@ -173,12 +179,19 @@ pub async fn send(conn: &CdpConnection, method: &str, params: Value) -> Result<V
         .send(cmd)
         .map_err(|_| CdpError::SendFailed)?;
 
-    // Wait for response
-    let result = response_rx.await.map_err(|_| CdpError::ResponseDropped)?;
-    result.map_err(|e| CdpError::ResponseError {
-        code: e.code,
-        message: e.message,
-    })
+    // Wait for response with a 30-second timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
+        Ok(Ok(result)) => result.map_err(|e| CdpError::ResponseError {
+            code: e.code,
+            message: e.message,
+        }),
+        Ok(Err(_)) => Err(CdpError::ResponseDropped),
+        Err(_) => {
+            // Timed out — clean up the pending entry to avoid memory leak
+            conn.pending.lock().await.remove(&id);
+            Err(CdpError::Timeout)
+        }
+    }
 }
 
 /// Subscribe to CDP events — reserved for WebMCP event listening.

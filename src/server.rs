@@ -244,6 +244,14 @@ pub struct ListNetworkRequestsParams {
     pub clear: Option<bool>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DownloadFileParams {
+    #[schemars(description = "URL of the file to download")]
+    pub url: String,
+    #[schemars(description = "Absolute local path to save the file to")]
+    pub save_path: String,
+}
+
 // -- Shared JS helpers --
 
 /// Build JS that finds the first visible, in-viewport element matching a selector.
@@ -2009,6 +2017,62 @@ impl CausewayServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "{count} request(s):\n{output}"
+        ))]))
+    }
+
+    // ---- File download ----
+
+    #[tool(description = "Download a file from a URL and save it to a local path. Works for images, documents, or any publicly accessible file.")]
+    async fn download_file(
+        &self,
+        Parameters(DownloadFileParams { url, save_path }): Parameters<DownloadFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("Download failed: {e}"), None))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(McpError::internal_error(
+                format!("HTTP {status} downloading {url}"),
+                None,
+            ));
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to read response body: {e}"), None))?;
+
+        let size = bytes.len();
+
+        // Ensure parent directory exists
+        let path = std::path::Path::new(&save_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| McpError::internal_error(format!("Failed to create directory: {e}"), None))?;
+        }
+
+        std::fs::write(&save_path, &bytes)
+            .map_err(|e| McpError::internal_error(format!("Failed to write file: {e}"), None))?;
+
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&save_path);
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Downloaded '{filename}' ({size} bytes, {content_type})\nSaved to: {save_path}"
         ))]))
     }
 

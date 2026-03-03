@@ -513,6 +513,8 @@ pub struct CausewayServer {
     console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
     network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
     pending_dialog: Arc<tokio::sync::Mutex<Option<PendingDialog>>>,
+    /// URL + title snapshot taken before click/submit actions, for navigation detection.
+    pre_nav_snapshot: Arc<tokio::sync::Mutex<(String, String)>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -526,6 +528,7 @@ impl CausewayServer {
             console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
+            pre_nav_snapshot: Arc::new(tokio::sync::Mutex::new((String::new(), String::new()))),
             tool_router: Self::tool_router(),
         }
     }
@@ -906,6 +909,7 @@ impl CausewayServer {
         let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
+        self.snapshot_pre_nav().await;
         self.execute_seq_reconnect(commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
@@ -981,6 +985,7 @@ impl CausewayServer {
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
 
+        self.snapshot_pre_nav().await;
         self.execute_seq_reconnect(commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
@@ -1287,14 +1292,37 @@ impl CausewayServer {
         ))]))
     }
 
-    #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Listens for CDP navigation events. Handles both full page loads and SPA navigations.")]
+    #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Detects both full page loads (via CDP events) and SPA navigations (via History API interception). Returns immediately on detection rather than waiting for timeout.")]
     async fn wait_for_navigation(
         &self,
         Parameters(WaitForNavigationParams { timeout_ms }): Parameters<WaitForNavigationParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = timeout_ms.unwrap_or(10000);
 
-        // Subscribe to CDP events to detect navigation reliably
+        // Read pre-click URL + title snapshot (set by click/click_text/submit_form)
+        let (orig_url, orig_title) = self.pre_nav_snapshot.lock().await.clone();
+
+        // Inject SPA interceptors: patch pushState/replaceState, listen for popstate/hashchange
+        let setup_js = r#"(() => {
+            window.__causeway_nav = null;
+            const origPush = history.pushState;
+            const origReplace = history.replaceState;
+            function done(type) {
+                window.__causeway_nav = { type, url: location.href };
+                history.pushState = origPush;
+                history.replaceState = origReplace;
+                window.removeEventListener('popstate', onNav);
+                window.removeEventListener('hashchange', onNav);
+            }
+            history.pushState = function(...a) { origPush.apply(this, a); done('pushState'); };
+            history.replaceState = function(...a) { origReplace.apply(this, a); done('replaceState'); };
+            const onNav = (e) => done(e.type);
+            window.addEventListener('popstate', onNav);
+            window.addEventListener('hashchange', onNav);
+        })()"#;
+        self.execute_reconnect(commands::evaluate(setup_js)).await.ok();
+
+        // Subscribe to CDP events for full navigations
         let mut receiver = {
             let conn = self.live.get().await;
             cdp::subscribe_events(&*conn)
@@ -1307,10 +1335,11 @@ impl CausewayServer {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() { break; }
 
-            match tokio::time::timeout(remaining, receiver.recv()).await {
+            // Wait for CDP events in 200ms windows, then poll JS + URL snapshot
+            let wait = std::cmp::min(remaining, std::time::Duration::from_millis(200));
+            match tokio::time::timeout(wait, receiver.recv()).await {
                 Ok(Ok(event)) => match event.method.as_str() {
                     "Page.navigatedWithinDocument" => {
-                        // SPA navigation (pushState/replaceState) — already complete
                         let url = event.params.get("url")
                             .and_then(|v| v.as_str())
                             .unwrap_or("(unknown)");
@@ -1319,7 +1348,6 @@ impl CausewayServer {
                         ))]));
                     }
                     "Page.frameNavigated" => {
-                        // Only main frame (no parentId)
                         let is_main = event.params
                             .get("frame")
                             .and_then(|f| f.get("parentId"))
@@ -1339,15 +1367,58 @@ impl CausewayServer {
                 },
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                    return Err(McpError::internal_error(
-                        "CDP connection closed during navigation wait".to_owned(), None,
-                    ));
+                    // Connection dropped — likely a full navigation destroyed context.
+                    // Wait briefly for the new page to settle, then check URL.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let title = self.execute_reconnect(commands::evaluate("document.title"))
+                        .await.ok()
+                        .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
+                        .unwrap_or_else(|| "(unknown)".to_owned());
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Page loaded: {title}"
+                    ))]));
                 }
-                Err(_) => break, // Timeout
+                Err(_) => {
+                    // 200ms window expired — poll JS SPA interceptors + URL change
+                    let poll_js = r#"JSON.stringify({
+                        nav: window.__causeway_nav,
+                        url: location.href,
+                        title: document.title
+                    })"#;
+                    if let Ok(result) = self.execute_reconnect(commands::evaluate(poll_js)).await {
+                        let raw = result.get("result")
+                            .and_then(|r| r.get("value"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}");
+                        if let Ok(poll) = serde_json::from_str::<serde_json::Value>(raw) {
+                            // Check SPA interceptor
+                            if let Some(nav) = poll.get("nav").filter(|v| !v.is_null()) {
+                                let nav_type = nav.get("type").and_then(|v| v.as_str()).unwrap_or("spa");
+                                let url = nav.get("url").and_then(|v| v.as_str()).unwrap_or("(unknown)");
+                                return Ok(CallToolResult::success(vec![Content::text(format!(
+                                    "SPA navigation ({nav_type}): {url}"
+                                ))]));
+                            }
+                            // Check URL/title change (catches frameworks that bypass History API)
+                            let cur_url = poll.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                            let cur_title = poll.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            if cur_url != orig_url || cur_title != orig_title {
+                                return Ok(CallToolResult::success(vec![Content::text(format!(
+                                    "Page changed: {cur_title}"
+                                ))]));
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Fallback: if we saw frameNavigated but missed loadEventFired, check current state
+        // Clean up interceptors
+        self.execute_reconnect(commands::evaluate(
+            "delete window.__causeway_nav"
+        )).await.ok();
+
+        // Fallback: if we saw frameNavigated but missed loadEventFired
         if frame_navigated {
             let title = self.execute_reconnect(commands::evaluate("document.title"))
                 .await.ok()
@@ -1358,10 +1429,14 @@ impl CausewayServer {
             ))]));
         }
 
-        Err(McpError::internal_error(
-            format!("Navigation did not complete within {timeout}ms"),
-            None,
-        ))
+        // Soft timeout — don't error, just inform
+        let title = self.execute_reconnect(commands::evaluate("document.title"))
+            .await.ok()
+            .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
+            .unwrap_or_else(|| "(unknown)".to_owned());
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "No navigation detected within {timeout}ms (current page: {title})"
+        ))]))
     }
 
     #[tool(description = "Navigate back in browser history.")]
@@ -1480,6 +1555,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
+        self.snapshot_pre_nav().await;
         let result = self.execute_reconnect(commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Submit failed: {e}"), None))?;
@@ -1766,6 +1842,20 @@ impl CausewayServer {
                 cdp::execute_sequence(&*self.live.get().await, commands).await
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Snapshot URL + title before a click action, for wait_for_navigation to compare against.
+    async fn snapshot_pre_nav(&self) {
+        let js = r#"JSON.stringify({ url: location.href, title: document.title })"#;
+        if let Ok(result) = self.execute_reconnect(commands::evaluate(js)).await {
+            if let Some(raw) = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    *self.pre_nav_snapshot.lock().await = (url, title);
+                }
+            }
         }
     }
 

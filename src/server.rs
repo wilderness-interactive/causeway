@@ -928,11 +928,16 @@ impl CausewayServer {
                 const els = document.querySelectorAll({tag});
                 const vw = window.innerWidth;
                 const vh = window.innerHeight;
+                const candidates = [];
                 for (const el of els) {{
                     const elText = el.textContent.trim().toLowerCase();
                     if (!elText.includes(searchText)) continue;
                     const r = el.getBoundingClientRect();
                     if (r.width === 0 || r.height === 0) continue;
+                    candidates.push({{ el, len: elText.length }});
+                }}
+                candidates.sort((a, b) => a.len - b.len);
+                for (const {{ el }} of candidates) {{
                     el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                     const rect = el.getBoundingClientRect();
@@ -1282,58 +1287,75 @@ impl CausewayServer {
         ))]))
     }
 
-    #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Polls document.readyState until 'complete'. Useful for SPAs and full page loads.")]
+    #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Listens for CDP navigation events. Handles both full page loads and SPA navigations.")]
     async fn wait_for_navigation(
         &self,
         Parameters(WaitForNavigationParams { timeout_ms }): Parameters<WaitForNavigationParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = timeout_ms.unwrap_or(10000);
-        let interval = 200u64;
-        let max_attempts = timeout / interval;
 
-        // Snapshot the starting URL so we can detect SPA navigations (where readyState stays 'complete').
-        let start_url = self.execute_reconnect(commands::evaluate("window.location.href"))
-            .await
-            .ok()
-            .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
-            .unwrap_or_default();
+        // Subscribe to CDP events to detect navigation reliably
+        let mut receiver = {
+            let conn = self.live.get().await;
+            cdp::subscribe_events(&*conn)
+        };
 
-        let mut nav_started = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
+        let mut frame_navigated = false;
 
-        for _ in 0..max_attempts {
-            let result = self.execute_reconnect(commands::evaluate(
-                "({ state: document.readyState, url: window.location.href })"
-            ))
-            .await
-            .map_err(|e| McpError::internal_error(format!("Navigation check failed: {e}"), None))?;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() { break; }
 
-            let val = result.get("result").and_then(|r| r.get("value"));
-            let state = val.and_then(|v| v.get("state")).and_then(|v| v.as_str()).unwrap_or("loading");
-            let url = val.and_then(|v| v.get("url")).and_then(|v| v.as_str()).unwrap_or("");
-
-            // Navigation has started if: URL changed (SPA) or readyState is no longer 'complete' (full nav).
-            if url != start_url || state != "complete" {
-                nav_started = true;
+            match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Ok(event)) => match event.method.as_str() {
+                    "Page.navigatedWithinDocument" => {
+                        // SPA navigation (pushState/replaceState) — already complete
+                        let url = event.params.get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(unknown)");
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "SPA navigation: {url}"
+                        ))]));
+                    }
+                    "Page.frameNavigated" => {
+                        // Only main frame (no parentId)
+                        let is_main = event.params
+                            .get("frame")
+                            .and_then(|f| f.get("parentId"))
+                            .is_none();
+                        if is_main { frame_navigated = true; }
+                    }
+                    "Page.loadEventFired" if frame_navigated => {
+                        let title = self.execute_reconnect(commands::evaluate("document.title"))
+                            .await.ok()
+                            .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
+                            .unwrap_or_else(|| "(unknown)".to_owned());
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "Page loaded: {title}"
+                        ))]));
+                    }
+                    _ => {}
+                },
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    return Err(McpError::internal_error(
+                        "CDP connection closed during navigation wait".to_owned(), None,
+                    ));
+                }
+                Err(_) => break, // Timeout
             }
+        }
 
-            if nav_started && state == "complete" {
-                let title_result = self.execute_reconnect(commands::evaluate("document.title"))
-                    .await
-                    .ok();
-
-                let title = title_result
-                    .as_ref()
-                    .and_then(|r| r.get("result"))
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(unknown)");
-
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Page loaded: {title}"
-                ))]));
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+        // Fallback: if we saw frameNavigated but missed loadEventFired, check current state
+        if frame_navigated {
+            let title = self.execute_reconnect(commands::evaluate("document.title"))
+                .await.ok()
+                .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
+                .unwrap_or_else(|| "(unknown)".to_owned());
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Page loaded: {title}"
+            ))]));
         }
 
         Err(McpError::internal_error(

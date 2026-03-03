@@ -276,3 +276,63 @@ pub fn key_chord(key: &str, modifiers: u32) -> Vec<(&'static str, Value)> {
         })),
     ]
 }
+
+/// Print current page as PDF (base64 encoded).
+pub fn print_to_pdf() -> (&'static str, Value) {
+    ("Page.printToPDF", json!({
+        "printBackground": true,
+        "preferCSSPageSize": true,
+    }))
+}
+
+/// Enable the Performance CDP domain.
+pub fn enable_performance() -> (&'static str, Value) {
+    ("Performance.enable", json!({}))
+}
+
+/// Get browser performance metrics.
+pub fn get_metrics() -> (&'static str, Value) {
+    ("Performance.getMetrics", json!({}))
+}
+
+/// Clear browser HTTP cache.
+pub fn clear_browser_cache() -> (&'static str, Value) {
+    ("Network.clearBrowserCache", json!({}))
+}
+
+/// Clear storage data for an origin.
+pub fn clear_data_for_origin(origin: &str, storage_types: &str) -> (&'static str, Value) {
+    ("Storage.clearDataForOrigin", json!({
+        "origin": origin,
+        "storageTypes": storage_types,
+    }))
+}
+
+/// Override the user agent string.
+pub fn set_user_agent(user_agent: &str) -> (&'static str, Value) {
+    ("Emulation.setUserAgentOverride", json!({
+        "userAgent": user_agent,
+    }))
+}
+
+/// Enable or disable touch event emulation.
+pub fn set_touch_emulation(enabled: bool) -> (&'static str, Value) {
+    ("Emulation.setTouchEmulationEnabled", json!({
+        "enabled": enabled,
+    }))
+}
+
+/// Full device metrics emulation (viewport + scale + mobile flag).
+pub fn emulate_device_metrics(width: u32, height: u32, scale_factor: f64, mobile: bool) -> (&'static str, Value) {
+    ("Emulation.setDeviceMetricsOverride", json!({
+        "width": width,
+        "height": height,
+        "deviceScaleFactor": scale_factor,
+        "mobile": mobile,
+    }))
+}
+
+/// Clear all device emulation overrides.
+pub fn clear_device_override() -> (&'static str, Value) {
+    ("Emulation.clearDeviceMetricsOverride", json!({}))
+}

@@ -252,6 +252,42 @@ pub struct DownloadFileParams {
     pub save_path: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ElementScreenshotParams {
+    #[schemars(description = "CSS selector of the element to screenshot")]
+    pub selector: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SavePdfParams {
+    #[schemars(description = "Absolute local path to save the PDF file")]
+    pub save_path: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClearStorageParams {
+    #[schemars(description = "Storage types to clear (comma-separated): cookies, local_storage, session_storage, indexeddb, cache_storage, all. Default: all")]
+    pub storage_types: Option<String>,
+    #[schemars(description = "Also clear browser HTTP cache. Default: true")]
+    pub clear_cache: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EmulateDeviceParams {
+    #[schemars(description = "Device preset: 'iPhone 14', 'iPhone 14 Pro', 'Pixel 7', 'iPad Air', 'Galaxy S21', or 'reset' to clear emulation")]
+    pub device: Option<String>,
+    #[schemars(description = "Custom viewport width (used when device preset is not specified)")]
+    pub width: Option<u32>,
+    #[schemars(description = "Custom viewport height")]
+    pub height: Option<u32>,
+    #[schemars(description = "Custom user agent string")]
+    pub user_agent: Option<String>,
+    #[schemars(description = "Enable touch events. Default: true for mobile presets")]
+    pub touch: Option<bool>,
+    #[schemars(description = "Device scale factor. Default: from preset or 1")]
+    pub device_scale_factor: Option<f64>,
+}
+
 // -- Shared JS helpers --
 
 /// Build JS that finds the first visible, in-viewport element matching a selector.
@@ -323,6 +359,14 @@ pub struct NetworkEntry {
     pub timestamp: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingDialog {
+    pub dialog_type: String,
+    pub message: String,
+    #[allow(dead_code)] // stored for prompt dialog forwarding
+    pub default_prompt: String,
+}
+
 // -- Chord parsing --
 
 /// Parse "Ctrl+Shift+A" → (modifiers_bitmask, key_string).
@@ -355,6 +399,25 @@ fn parse_chord(chord: &str) -> (u32, String) {
     };
 
     (modifiers, key)
+}
+
+// -- Device emulation presets --
+
+/// Returns (width, height, device_scale_factor, mobile, user_agent) for known device presets.
+fn device_preset(name: &str) -> Option<(u32, u32, f64, bool, &'static str)> {
+    match name.to_lowercase().replace(' ', "").as_str() {
+        "iphone14" => Some((390, 844, 3.0, true,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")),
+        "iphone14pro" | "iphone14promax" => Some((393, 852, 3.0, true,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")),
+        "pixel7" => Some((412, 915, 2.625, true,
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36")),
+        "ipadair" | "ipad" => Some((820, 1180, 2.0, true,
+            "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")),
+        "galaxys21" | "samsungs21" => Some((360, 800, 3.0, true,
+            "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36")),
+        _ => None,
+    }
 }
 
 // -- Accessibility tree rendering --
@@ -449,6 +512,7 @@ pub struct CausewayServer {
     sticky_target: Arc<tokio::sync::Mutex<Option<String>>>,
     console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
     network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
+    pending_dialog: Arc<tokio::sync::Mutex<Option<PendingDialog>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -461,6 +525,7 @@ impl CausewayServer {
             sticky_target: Arc::new(tokio::sync::Mutex::new(None)),
             console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -1798,14 +1863,30 @@ impl CausewayServer {
         &self,
         Parameters(HandleDialogParams { accept, prompt_text }): Parameters<HandleDialogParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.execute_reconnect(commands::handle_dialog(accept, prompt_text.as_deref()))
-            .await
-            .map_err(|e| McpError::internal_error(format!("Handle dialog failed: {e}"), None))?;
+        let dialog_info = self.pending_dialog.lock().await.take();
 
-        let action = if accept { "accepted" } else { "dismissed" };
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Dialog {action}"
-        ))]))
+        match self.execute_reconnect(commands::handle_dialog(accept, prompt_text.as_deref())).await {
+            Ok(_) => {
+                let action = if accept { "accepted" } else { "dismissed" };
+                let detail = dialog_info
+                    .map(|d| format!(" ({} dialog: \"{}\")", d.dialog_type, d.message))
+                    .unwrap_or_default();
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Dialog {action}{detail}"
+                ))]))
+            }
+            Err(e) => {
+                let hint = if dialog_info.is_none() {
+                    " (no dialog event was detected — the dialog may have been auto-dismissed by the browser)"
+                } else {
+                    ""
+                };
+                Err(McpError::internal_error(
+                    format!("Handle dialog failed: {e}{hint}"),
+                    None,
+                ))
+            }
+        }
     }
 
     #[tool(description = "Press a keyboard shortcut with modifier keys (e.g. \"Ctrl+A\", \"Ctrl+Shift+T\", \"Alt+F4\"). Use modifier names: Ctrl, Alt, Shift, Meta.")]
@@ -2022,14 +2103,40 @@ impl CausewayServer {
 
     // ---- File download ----
 
-    #[tool(description = "Download a file from a URL and save it to a local path. Works for images, documents, or any publicly accessible file.")]
+    #[tool(description = "Download a file from a URL and save it to a local path. Works for images, documents, or any publicly accessible file. Automatically forwards browser cookies for authenticated downloads.")]
     async fn download_file(
         &self,
         Parameters(DownloadFileParams { url, save_path }): Parameters<DownloadFileParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Forward browser cookies for the target URL (enables authenticated downloads)
+        let cookie_header = self.exec_with_reconnect(
+            "Network.getCookies",
+            serde_json::json!({ "urls": [&url] }),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.get("cookies")?.as_array().cloned())
+        .map(|cookies| {
+            cookies
+                .iter()
+                .filter_map(|c| {
+                    let name = c.get("name")?.as_str()?;
+                    let value = c.get("value")?.as_str()?;
+                    Some(format!("{name}={value}"))
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|s| !s.is_empty());
+
         let client = reqwest::Client::new();
-        let response = client
-            .get(&url)
+        let mut request = client.get(&url);
+
+        if let Some(cookies) = &cookie_header {
+            request = request.header("Cookie", cookies);
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| McpError::internal_error(format!("Download failed: {e}"), None))?;
@@ -2056,7 +2163,6 @@ impl CausewayServer {
 
         let size = bytes.len();
 
-        // Ensure parent directory exists
         let path = std::path::Path::new(&save_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -2071,8 +2177,265 @@ impl CausewayServer {
             .and_then(|n| n.to_str())
             .unwrap_or(&save_path);
 
+        let auth_note = if cookie_header.is_some() { " (with browser cookies)" } else { "" };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Downloaded '{filename}' ({size} bytes, {content_type})\nSaved to: {save_path}"
+            "Downloaded '{filename}' ({size} bytes, {content_type}){auth_note}\nSaved to: {save_path}"
+        ))]))
+    }
+
+    // ---- Batch 3: Screenshots, PDF, metrics, storage, device emulation ----
+
+    #[tool(description = "Take a screenshot of a specific element by CSS selector. Returns the cropped image as base64 PNG.")]
+    async fn element_screenshot(
+        &self,
+        Parameters(ElementScreenshotParams { selector }): Parameters<ElementScreenshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = format!(
+            r#"(async () => {{
+                const el = document.querySelector({sel});
+                if (!el) return null;
+                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                const rect = el.getBoundingClientRect();
+                return {{
+                    x: rect.x + window.scrollX,
+                    y: rect.y + window.scrollY,
+                    width: rect.width,
+                    height: rect.height,
+                }};
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap()
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let clip = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| McpError::invalid_params(format!("Element not found: {selector}"), None))?;
+
+        let x = clip.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = clip.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let w = clip.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let h = clip.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        let screenshot_result = self.exec_with_reconnect(
+            "Page.captureScreenshot",
+            serde_json::json!({
+                "format": "png",
+                "captureBeyondViewport": true,
+                "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1 },
+            }),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
+
+        let data = screenshot_result
+            .get("data")
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::image(
+            data.to_owned(),
+            "image/png",
+        )]))
+    }
+
+    #[tool(description = "Save the current page as a PDF file. Renders the full page with print styles applied.")]
+    async fn save_pdf(
+        &self,
+        Parameters(SavePdfParams { save_path }): Parameters<SavePdfParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self.execute_reconnect(commands::print_to_pdf())
+            .await
+            .map_err(|e| McpError::internal_error(format!("PDF generation failed: {e}"), None))?;
+
+        let data = result
+            .get("data")
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| McpError::internal_error("No PDF data returned".to_owned(), None))?;
+
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| McpError::internal_error(format!("Failed to decode PDF: {e}"), None))?;
+
+        let size = bytes.len();
+        let path = std::path::Path::new(&save_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| McpError::internal_error(format!("Failed to create directory: {e}"), None))?;
+        }
+
+        std::fs::write(&save_path, &bytes)
+            .map_err(|e| McpError::internal_error(format!("Failed to write PDF: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Saved PDF ({size} bytes) to: {save_path}"
+        ))]))
+    }
+
+    #[tool(description = "Get browser performance metrics: DOM node count, JS heap size, layout count, and more. Useful for diagnosing performance issues.")]
+    async fn get_page_metrics(&self) -> Result<CallToolResult, McpError> {
+        let _ = self.execute_reconnect(commands::enable_performance()).await;
+
+        let result = self.execute_reconnect(commands::get_metrics())
+            .await
+            .map_err(|e| McpError::internal_error(format!("Get metrics failed: {e}"), None))?;
+
+        let metrics = result
+            .get("metrics")
+            .and_then(|m| m.as_array())
+            .ok_or_else(|| McpError::internal_error("No metrics returned".to_owned(), None))?;
+
+        let output: Vec<String> = metrics
+            .iter()
+            .filter_map(|m| {
+                let name = m.get("name")?.as_str()?;
+                let value = m.get("value")?.as_f64()?;
+                // Format large integers without decimals, small values with precision
+                let formatted = if value == value.floor() && value.abs() < 1e15 {
+                    format!("{}", value as i64)
+                } else {
+                    format!("{value:.2}")
+                };
+                Some(format!("{name}: {formatted}"))
+            })
+            .collect();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} metrics:\n{}",
+            output.len(),
+            output.join("\n")
+        ))]))
+    }
+
+    #[tool(description = "Clear browser cache and/or site storage (cookies, localStorage, sessionStorage, IndexedDB, cache storage). Operates on the current page's origin.")]
+    async fn clear_storage(
+        &self,
+        Parameters(ClearStorageParams { storage_types, clear_cache }): Parameters<ClearStorageParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut cleared = Vec::new();
+
+        // Get current origin for storage clearing
+        let origin_result = self.execute_reconnect(commands::evaluate("window.location.origin"))
+            .await
+            .ok();
+        let origin = origin_result
+            .as_ref()
+            .and_then(|r| r.get("result"))
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let types = storage_types.as_deref().unwrap_or("all");
+
+        // Clear via CDP Storage domain
+        if !origin.is_empty() {
+            let _ = self.execute_reconnect(commands::clear_data_for_origin(origin, types)).await;
+            cleared.push(format!("storage ({types}) for {origin}"));
+        }
+
+        // Also clear via JS for good measure (some storage types need both)
+        if types == "all" || types.contains("local_storage") {
+            let _ = self.execute_reconnect(commands::evaluate("localStorage.clear()")).await;
+        }
+        if types == "all" || types.contains("session_storage") {
+            let _ = self.execute_reconnect(commands::evaluate("sessionStorage.clear()")).await;
+        }
+
+        // Clear HTTP cache
+        if clear_cache.unwrap_or(true) {
+            let _ = self.execute_reconnect(commands::clear_browser_cache()).await;
+            cleared.push("browser cache".to_owned());
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Cleared: {}",
+            cleared.join(", ")
+        ))]))
+    }
+
+    #[tool(description = "Emulate a mobile device or custom viewport with user agent, touch events, and device scale factor. Use device presets or specify custom parameters. Use device='reset' to clear emulation.")]
+    async fn emulate_device(
+        &self,
+        Parameters(EmulateDeviceParams { device, width, height, user_agent, touch, device_scale_factor }): Parameters<EmulateDeviceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Handle reset
+        if device.as_deref() == Some("reset") {
+            self.execute_reconnect(commands::clear_device_override())
+                .await
+                .map_err(|e| McpError::internal_error(format!("Clear emulation failed: {e}"), None))?;
+            self.execute_reconnect(commands::set_user_agent(""))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Clear user agent failed: {e}"), None))?;
+            self.execute_reconnect(commands::set_touch_emulation(false))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Clear touch failed: {e}"), None))?;
+            return Ok(CallToolResult::success(vec![Content::text(
+                "Device emulation cleared — back to desktop mode".to_owned()
+            )]));
+        }
+
+        // Try device preset
+        if let Some(preset_name) = &device {
+            if let Some((w, h, scale, mobile, ua)) = device_preset(preset_name) {
+                let actual_w = width.unwrap_or(w);
+                let actual_h = height.unwrap_or(h);
+                let actual_scale = device_scale_factor.unwrap_or(scale);
+                let actual_ua = user_agent.as_deref().unwrap_or(ua);
+                let actual_touch = touch.unwrap_or(mobile);
+
+                self.execute_reconnect(commands::emulate_device_metrics(actual_w, actual_h, actual_scale, mobile))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Set device metrics failed: {e}"), None))?;
+                self.execute_reconnect(commands::set_user_agent(actual_ua))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Set user agent failed: {e}"), None))?;
+                self.execute_reconnect(commands::set_touch_emulation(actual_touch))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Set touch failed: {e}"), None))?;
+
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Emulating {preset_name}: {actual_w}x{actual_h} @{actual_scale}x, touch={actual_touch}"
+                ))]));
+            } else {
+                return Err(McpError::invalid_params(
+                    format!("Unknown device preset: '{preset_name}'. Available: iPhone 14, iPhone 14 Pro, Pixel 7, iPad Air, Galaxy S21, reset"),
+                    None,
+                ));
+            }
+        }
+
+        // Custom device parameters
+        let w = width.ok_or_else(|| McpError::invalid_params(
+            "Provide 'device' preset name or custom 'width' + 'height'".to_owned(), None
+        ))?;
+        let h = height.ok_or_else(|| McpError::invalid_params(
+            "Provide 'height' with custom width".to_owned(), None
+        ))?;
+        let scale = device_scale_factor.unwrap_or(1.0);
+        let enable_touch = touch.unwrap_or(false);
+
+        self.execute_reconnect(commands::emulate_device_metrics(w, h, scale, enable_touch))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Set device metrics failed: {e}"), None))?;
+
+        if let Some(ua) = &user_agent {
+            self.execute_reconnect(commands::set_user_agent(ua))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Set user agent failed: {e}"), None))?;
+        }
+
+        self.execute_reconnect(commands::set_touch_emulation(enable_touch))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Set touch failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Custom device: {w}x{h} @{scale}x, touch={enable_touch}"
         ))]))
     }
 
@@ -2087,13 +2450,15 @@ impl CausewayServer {
         };
         let console_log = self.console_log.clone();
         let network_log = self.network_log.clone();
-        tokio::spawn(Self::run_event_collector(receiver, console_log, network_log));
+        let pending_dialog = self.pending_dialog.clone();
+        tokio::spawn(Self::run_event_collector(receiver, console_log, network_log, pending_dialog));
     }
 
     async fn run_event_collector(
         mut receiver: tokio::sync::broadcast::Receiver<cdp::CdpEvent>,
         console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
         network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
+        pending_dialog: Arc<tokio::sync::Mutex<Option<PendingDialog>>>,
     ) {
         loop {
             match receiver.recv().await {
@@ -2174,6 +2539,29 @@ impl CausewayServer {
                                     break;
                                 }
                             }
+                        }
+                        "Page.javascriptDialogOpening" => {
+                            let dialog_type = event.params
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("alert")
+                                .to_owned();
+                            let message = event.params
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let default_prompt = event.params
+                                .get("defaultPrompt")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            *pending_dialog.lock().await = Some(PendingDialog {
+                                dialog_type, message, default_prompt,
+                            });
+                        }
+                        "Page.javascriptDialogClosed" => {
+                            *pending_dialog.lock().await = None;
                         }
                         _ => {}
                     }

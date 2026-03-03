@@ -241,12 +241,28 @@ pub fn handle_dialog(accept: bool, prompt_text: Option<&str>) -> (&'static str, 
 
 /// Dispatch keyDown+keyUp with modifier keys. modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8.
 pub fn key_chord(key: &str, modifiers: u32) -> Vec<(&'static str, Value)> {
-    let code = if key.len() == 1 && key.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
-        format!("Key{}", key.to_uppercase())
+    // Map key to physical code and virtual key code (same lookup as press_key)
+    let (code, vk) = if key.len() == 1 && key.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+        // Letter keys: code = "KeyA", vk = 65..90 (uppercase ASCII)
+        let upper = key.to_uppercase();
+        (format!("Key{upper}"), upper.chars().next().unwrap() as u32)
+    } else if key.len() == 1 && key.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        // Digit keys: code = "Digit0", vk = 48..57
+        (format!("Digit{key}"), key.chars().next().unwrap() as u32)
     } else {
-        key.to_owned()
+        // Special keys — reuse the same VK lookup as press_key
+        let vk = match key {
+            "Enter" => 13, "Tab" => 9, "Escape" => 27, "Backspace" => 8,
+            "Delete" => 46, "Space" => 32, "Home" => 36, "End" => 35,
+            "PageUp" => 33, "PageDown" => 34,
+            "ArrowUp" => 38, "ArrowDown" => 40, "ArrowLeft" => 37, "ArrowRight" => 39,
+            "F1" => 112, "F2" => 113, "F3" => 114, "F4" => 115,
+            "F5" => 116, "F6" => 117, "F7" => 118, "F8" => 119,
+            "F9" => 120, "F10" => 121, "F11" => 122, "F12" => 123,
+            _ => 0,
+        };
+        (key.to_owned(), vk)
     };
-    let vk = key.chars().next().map(|c| c as u32).unwrap_or(0);
     vec![
         ("Input.dispatchKeyEvent", json!({
             "type": "keyDown", "modifiers": modifiers,

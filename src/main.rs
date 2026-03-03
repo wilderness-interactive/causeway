@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let live = Arc::new(LiveConnection::new(conn));
     let mcp_server = server::CausewayServer::new(live, config.browser.port);
+    mcp_server.resubscribe_events().await;
 
     let service = mcp_server
         .serve(rmcp::transport::io::stdio())

@@ -182,6 +182,68 @@ pub struct UploadFileParams {
     pub file_path: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct HandleDialogParams {
+    #[schemars(description = "true to accept (OK/Yes), false to dismiss (Cancel/No)")]
+    pub accept: bool,
+    #[schemars(description = "Text to enter for prompt dialogs")]
+    pub prompt_text: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct KeyboardChordParams {
+    #[schemars(description = "Key chord to press, e.g. \"Ctrl+A\", \"Ctrl+Shift+T\", \"Alt+F4\". Modifier names: Ctrl, Alt, Shift, Meta.")]
+    pub chord: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DoubleClickParams {
+    #[schemars(description = "CSS selector of the element to double-click")]
+    pub selector: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DragParams {
+    #[schemars(description = "CSS selector of the element to drag from (preferred over from_x/from_y)")]
+    pub from_selector: Option<String>,
+    #[schemars(description = "CSS selector of the element to drag to (preferred over to_x/to_y)")]
+    pub to_selector: Option<String>,
+    #[schemars(description = "X coordinate to start drag (used when from_selector not provided)")]
+    pub from_x: Option<f64>,
+    #[schemars(description = "Y coordinate to start drag (used when from_selector not provided)")]
+    pub from_y: Option<f64>,
+    #[schemars(description = "X coordinate to drag to (used when to_selector not provided)")]
+    pub to_x: Option<f64>,
+    #[schemars(description = "Y coordinate to drag to (used when to_selector not provided)")]
+    pub to_y: Option<f64>,
+    #[schemars(description = "Number of intermediate steps for smooth drag (default: 10)")]
+    pub steps: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetViewportParams {
+    #[schemars(description = "Viewport width in pixels")]
+    pub width: u32,
+    #[schemars(description = "Viewport height in pixels")]
+    pub height: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetConsoleMessagesParams {
+    #[schemars(description = "Filter by level: \"log\", \"info\", \"warn\", \"error\", \"debug\". Omit for all.")]
+    pub level: Option<String>,
+    #[schemars(description = "Clear the console log buffer after reading (default: false)")]
+    pub clear: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListNetworkRequestsParams {
+    #[schemars(description = "Filter by URL substring (case-insensitive). Omit for all.")]
+    pub url_filter: Option<String>,
+    #[schemars(description = "Clear the network log buffer after reading (default: false)")]
+    pub clear: Option<bool>,
+}
+
 // -- Shared JS helpers --
 
 /// Build JS that finds the first visible, in-viewport element matching a selector.
@@ -233,6 +295,142 @@ fn js_focus_visible_element(selector: &str, should_clear: bool) -> String {
     )
 }
 
+// -- Event buffer data --
+
+#[derive(Debug, Clone)]
+pub struct ConsoleEntry {
+    pub level: String,
+    pub text: String,
+    #[allow(dead_code)] // stored for future sorting/filtering
+    pub timestamp: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkEntry {
+    pub request_id: String,
+    pub url: String,
+    pub method: String,
+    pub status: Option<u16>,
+    #[allow(dead_code)] // stored for future sorting/filtering
+    pub timestamp: f64,
+}
+
+// -- Chord parsing --
+
+/// Parse "Ctrl+Shift+A" → (modifiers_bitmask, key_string).
+/// Modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8.
+fn parse_chord(chord: &str) -> (u32, String) {
+    let parts: Vec<&str> = chord.split('+').collect();
+    let mut modifiers = 0u32;
+    let mut key_part = String::new();
+
+    for part in &parts {
+        match part.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= 2,
+            "alt" => modifiers |= 1,
+            "meta" | "cmd" | "super" | "win" => modifiers |= 4,
+            "shift" => modifiers |= 8,
+            _ => key_part = part.trim().to_owned(),
+        }
+    }
+
+    // Single letter: lowercase normally, uppercase if Shift
+    let key = if key_part.len() == 1 && key_part.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+        if modifiers & 8 != 0 { key_part.to_uppercase() } else { key_part.to_lowercase() }
+    } else {
+        // Named key like "Enter", "F5" — capitalize first letter
+        let mut chars = key_part.chars();
+        match chars.next() {
+            None => key_part,
+            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        }
+    };
+
+    (modifiers, key)
+}
+
+// -- Accessibility tree rendering --
+
+fn render_ax_tree(nodes: &[serde_json::Value]) -> String {
+    use std::collections::HashMap;
+
+    let mut by_id: HashMap<&str, &serde_json::Value> = HashMap::new();
+    for node in nodes {
+        if let Some(id) = node.get("nodeId").and_then(|v| v.as_str()) {
+            by_id.insert(id, node);
+        }
+    }
+
+    // Root = no parentId, or parent not in the map
+    let mut root_ids: Vec<&str> = Vec::new();
+    for node in nodes {
+        let id = match node.get("nodeId").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => continue,
+        };
+        let has_parent_in_tree = node
+            .get("parentId")
+            .and_then(|v| v.as_str())
+            .map(|p| by_id.contains_key(p))
+            .unwrap_or(false);
+        if !has_parent_in_tree {
+            root_ids.push(id);
+        }
+    }
+
+    let mut output = String::new();
+    for root_id in &root_ids {
+        ax_walk(root_id, &by_id, 0, &mut output);
+    }
+    output
+}
+
+fn ax_walk(
+    node_id: &str,
+    by_id: &std::collections::HashMap<&str, &serde_json::Value>,
+    depth: usize,
+    output: &mut String,
+) {
+    let node = match by_id.get(node_id) {
+        Some(n) => n,
+        None => return,
+    };
+
+    let role = node
+        .get("role")
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let ignored = node.get("ignored").and_then(|v| v.as_bool()).unwrap_or(false);
+    let skip = ignored || role == "none" || role == "ignored";
+
+    if !skip {
+        let name = node
+            .get("name")
+            .and_then(|n| n.get("value"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+
+        let indent = "  ".repeat(depth);
+        if let Some(n) = name {
+            output.push_str(&format!("{indent}[{role}] \"{n}\"\n"));
+        } else {
+            output.push_str(&format!("{indent}[{role}]\n"));
+        }
+    }
+
+    let next_depth = if skip { depth } else { depth + 1 };
+
+    if let Some(children) = node.get("childIds").and_then(|v| v.as_array()) {
+        for child_id in children {
+            if let Some(id) = child_id.as_str() {
+                ax_walk(id, by_id, next_depth, output);
+            }
+        }
+    }
+}
+
 // -- MCP Server --
 
 #[derive(Debug, Clone)]
@@ -241,6 +439,8 @@ pub struct CausewayServer {
     port: u16,
     /// The target ID of the tab we consider "ours". try_reconnect returns here.
     sticky_target: Arc<tokio::sync::Mutex<Option<String>>>,
+    console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
+    network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -251,6 +451,8 @@ impl CausewayServer {
             live,
             port,
             sticky_target: Arc::new(tokio::sync::Mutex::new(None)),
+            console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -1483,6 +1685,7 @@ impl CausewayServer {
             .await
             .map_err(|e| format!("Reconnect failed: {e}"))?;
         self.live.swap(new_conn).await;
+        self.resubscribe_events().await;
         tracing::info!("CDP reconnected to {ws_url}");
         Ok(())
     }
@@ -1502,6 +1705,7 @@ impl CausewayServer {
                 None,
             ))?;
         self.live.swap(new_conn).await;
+        self.resubscribe_events().await;
         Ok(())
     }
 
@@ -1577,6 +1781,343 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Closed tab {target_id}"
         ))]))
+    }
+
+    // ---- Batch 1: New interaction tools ----
+
+    #[tool(description = "Handle a browser dialog (alert, confirm, prompt, or beforeunload). Use this when a dialog is blocking the page.")]
+    async fn handle_dialog(
+        &self,
+        Parameters(HandleDialogParams { accept, prompt_text }): Parameters<HandleDialogParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.execute_reconnect(commands::handle_dialog(accept, prompt_text.as_deref()))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Handle dialog failed: {e}"), None))?;
+
+        let action = if accept { "accepted" } else { "dismissed" };
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Dialog {action}"
+        ))]))
+    }
+
+    #[tool(description = "Press a keyboard shortcut with modifier keys (e.g. \"Ctrl+A\", \"Ctrl+Shift+T\", \"Alt+F4\"). Use modifier names: Ctrl, Alt, Shift, Meta.")]
+    async fn keyboard_chord(
+        &self,
+        Parameters(KeyboardChordParams { chord }): Parameters<KeyboardChordParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (modifiers, key) = parse_chord(&chord);
+        self.execute_seq_reconnect(commands::key_chord(&key, modifiers))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Keyboard chord failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pressed chord: {chord}"
+        ))]))
+    }
+
+    #[tool(description = "Double-click an element by CSS selector. Useful for selecting text or triggering double-click handlers.")]
+    async fn double_click(
+        &self,
+        Parameters(DoubleClickParams { selector }): Parameters<DoubleClickParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = js_find_visible_element(&selector);
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let coords = result.get("result").and_then(|r| r.get("value"));
+        match coords {
+            Some(v) if !v.is_null() => {
+                let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                self.execute_seq_reconnect(commands::double_click(x, y))
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Double-click failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Double-clicked '{selector}' at ({x:.0}, {y:.0})"
+                ))]))
+            }
+            _ => Err(McpError::invalid_params(
+                format!("No visible, in-viewport element found for: {selector}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(description = "Drag from one location to another. Provide CSS selectors (preferred) or explicit x/y coordinates.")]
+    async fn drag(
+        &self,
+        #[allow(clippy::too_many_arguments)]
+        Parameters(DragParams { from_selector, to_selector, from_x, from_y, to_x, to_y, steps }): Parameters<DragParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolve "from" coordinates
+        let (fx, fy) = if let Some(sel) = &from_selector {
+            let js = js_find_visible_element(sel);
+            let result = self.execute_reconnect(commands::evaluate(&js))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Failed to find from element: {e}"), None))?;
+            let v = result.get("result").and_then(|r| r.get("value"))
+                .filter(|v| !v.is_null())
+                .ok_or_else(|| McpError::invalid_params(format!("No visible element for from_selector: {sel}"), None))?;
+            (
+                v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                v.get("y").and_then(|y| y.as_f64()).unwrap_or(0.0),
+            )
+        } else {
+            (
+                from_x.ok_or_else(|| McpError::invalid_params("Provide from_selector or from_x+from_y".to_owned(), None))?,
+                from_y.ok_or_else(|| McpError::invalid_params("Provide from_selector or from_x+from_y".to_owned(), None))?,
+            )
+        };
+
+        // Resolve "to" coordinates
+        let (tx, ty) = if let Some(sel) = &to_selector {
+            let js = js_find_visible_element(sel);
+            let result = self.execute_reconnect(commands::evaluate(&js))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Failed to find to element: {e}"), None))?;
+            let v = result.get("result").and_then(|r| r.get("value"))
+                .filter(|v| !v.is_null())
+                .ok_or_else(|| McpError::invalid_params(format!("No visible element for to_selector: {sel}"), None))?;
+            (
+                v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                v.get("y").and_then(|y| y.as_f64()).unwrap_or(0.0),
+            )
+        } else {
+            (
+                to_x.ok_or_else(|| McpError::invalid_params("Provide to_selector or to_x+to_y".to_owned(), None))?,
+                to_y.ok_or_else(|| McpError::invalid_params("Provide to_selector or to_x+to_y".to_owned(), None))?,
+            )
+        };
+
+        let drag_steps = steps.unwrap_or(10);
+        self.execute_seq_reconnect(commands::drag(fx, fy, tx, ty, drag_steps))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Drag failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Dragged from ({fx:.0}, {fy:.0}) to ({tx:.0}, {ty:.0})"
+        ))]))
+    }
+
+    #[tool(description = "Set the browser viewport size. Useful for testing responsive layouts or ensuring consistent screenshots.")]
+    async fn set_viewport(
+        &self,
+        Parameters(SetViewportParams { width, height }): Parameters<SetViewportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.execute_reconnect(commands::set_viewport(width, height))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Set viewport failed: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Viewport set to {width}x{height}"
+        ))]))
+    }
+
+    #[tool(description = "Get a snapshot of the page's accessibility tree. Works on all pages — browsers compute the AX tree from semantic HTML even without explicit ARIA. Returns a compact indented role/name tree, much more token-efficient than screenshots for navigation.")]
+    async fn accessibility_snapshot(&self) -> Result<CallToolResult, McpError> {
+        // Enable Accessibility domain (idempotent)
+        let _ = self.execute_reconnect(commands::enable_accessibility()).await;
+
+        let result = self.execute_reconnect(commands::get_full_ax_tree())
+            .await
+            .map_err(|e| McpError::internal_error(format!("Accessibility snapshot failed: {e}"), None))?;
+
+        let nodes = result
+            .get("nodes")
+            .and_then(|n| n.as_array())
+            .ok_or_else(|| McpError::internal_error("No accessibility nodes returned".to_owned(), None))?;
+
+        let tree = render_ax_tree(nodes);
+        let truncated = if tree.len() > 15000 {
+            format!("{}...\n\n[Truncated — {} total chars]", &tree[..15000], tree.len())
+        } else {
+            tree
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(truncated)]))
+    }
+
+    // ---- Batch 2: Event buffering tools ----
+
+    #[tool(description = "Read buffered console messages from the page. Includes console.log, warn, error, etc. Messages accumulate since last navigation or clear.")]
+    async fn get_console_messages(
+        &self,
+        Parameters(GetConsoleMessagesParams { level, clear }): Parameters<GetConsoleMessagesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut log = self.console_log.lock().await;
+        let filtered: Vec<&ConsoleEntry> = log
+            .iter()
+            .filter(|e| level.as_deref().map(|l| e.level == l).unwrap_or(true))
+            .collect();
+
+        if filtered.is_empty() {
+            if clear.unwrap_or(false) { log.clear(); }
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No console messages".to_owned(),
+            )]));
+        }
+
+        let count = filtered.len();
+        let output = filtered
+            .iter()
+            .map(|e| format!("[{}] {}", e.level.to_uppercase(), e.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if clear.unwrap_or(false) { log.clear(); }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{count} message(s):\n{output}"
+        ))]))
+    }
+
+    #[tool(description = "List buffered network requests captured since last navigation. Shows method, URL, and HTTP status. Optionally filter by URL substring.")]
+    async fn list_network_requests(
+        &self,
+        Parameters(ListNetworkRequestsParams { url_filter, clear }): Parameters<ListNetworkRequestsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut log = self.network_log.lock().await;
+        let filtered: Vec<&NetworkEntry> = log
+            .iter()
+            .filter(|e| {
+                url_filter
+                    .as_deref()
+                    .map(|f| e.url.to_lowercase().contains(&f.to_lowercase()))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        if filtered.is_empty() {
+            if clear.unwrap_or(false) { log.clear(); }
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No network requests captured".to_owned(),
+            )]));
+        }
+
+        let count = filtered.len();
+        let output = filtered
+            .iter()
+            .map(|e| {
+                let status = e.status.map(|s| format!("{s}")).unwrap_or_else(|| "pending".to_owned());
+                format!("{} {} [{status}]", e.method, e.url)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if clear.unwrap_or(false) { log.clear(); }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{count} request(s):\n{output}"
+        ))]))
+    }
+
+    // ---- Event subscription (non-tool methods) ----
+
+    /// Subscribe to CDP events from the current connection and spawn a collector task.
+    /// Old collector tasks die naturally when their connection's broadcast sender drops.
+    pub async fn resubscribe_events(&self) {
+        let receiver = {
+            let conn = self.live.get().await;
+            cdp::subscribe_events(&*conn)
+        };
+        let console_log = self.console_log.clone();
+        let network_log = self.network_log.clone();
+        tokio::spawn(Self::run_event_collector(receiver, console_log, network_log));
+    }
+
+    async fn run_event_collector(
+        mut receiver: tokio::sync::broadcast::Receiver<cdp::CdpEvent>,
+        console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
+        network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
+    ) {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    match event.method.as_str() {
+                        "Runtime.consoleAPICalled" => {
+                            let level = event.params
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("log")
+                                .to_owned();
+                            let text = event.params
+                                .get("args")
+                                .and_then(|a| a.as_array())
+                                .map(|args| {
+                                    args.iter()
+                                        .filter_map(|a| {
+                                            a.get("value")
+                                                .and_then(|v| v.as_str())
+                                                .map(|s| s.to_owned())
+                                                .or_else(|| {
+                                                    a.get("description")
+                                                        .and_then(|v| v.as_str())
+                                                        .map(|s| s.to_owned())
+                                                })
+                                                .or_else(|| Some(serde_json::to_string(a).unwrap_or_default()))
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                })
+                                .unwrap_or_default();
+                            let timestamp = event.params
+                                .get("timestamp")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            console_log.lock().await.push(ConsoleEntry { level, text, timestamp });
+                        }
+                        "Network.requestWillBeSent" => {
+                            let request_id = event.params
+                                .get("requestId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let url = event.params
+                                .get("request")
+                                .and_then(|r| r.get("url"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let method = event.params
+                                .get("request")
+                                .and_then(|r| r.get("method"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("GET")
+                                .to_owned();
+                            let timestamp = event.params
+                                .get("timestamp")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            network_log.lock().await.push(NetworkEntry {
+                                request_id, url, method, status: None, timestamp,
+                            });
+                        }
+                        "Network.responseReceived" => {
+                            let request_id = event.params
+                                .get("requestId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let status = event.params
+                                .get("response")
+                                .and_then(|r| r.get("status"))
+                                .and_then(|v| v.as_u64())
+                                .map(|s| s as u16);
+                            let mut log = network_log.lock().await;
+                            for entry in log.iter_mut().rev() {
+                                if entry.request_id == request_id {
+                                    entry.status = status;
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
     }
 }
 

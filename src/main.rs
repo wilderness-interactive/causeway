@@ -15,7 +15,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("causeway=debug")
         .init();
 
-    let config = config::load_config("causeway.toml")?;
+    // Config search: cwd → source root (two up from exe in target/debug/) → next to exe
+    let config_path = [
+        Some(std::path::PathBuf::from("causeway.toml")),
+        std::env::current_exe().ok().and_then(|p| p.parent()?.parent()?.parent().map(|d| d.join("causeway.toml"))),
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("causeway.toml"))),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.exists())
+    .unwrap_or_else(|| std::path::PathBuf::from("causeway.toml"));
+    let config = config::load_config(config_path.to_str().unwrap_or("causeway.toml"))?;
     tracing::info!("Causeway loaded config: {:?}", config.browser);
 
     let launch_result = browser::launch(&config.browser).await?;

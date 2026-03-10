@@ -274,6 +274,12 @@ pub struct SavePdfParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadFormParams {
+    #[schemars(description = "CSS selector for the form or container (default: entire page)")]
+    pub selector: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClearStorageParams {
     #[schemars(description = "Storage types to clear (comma-separated): cookies, local_storage, session_storage, indexeddb, cache_storage, all. Default: all")]
     pub storage_types: Option<String>,
@@ -1125,6 +1131,72 @@ impl CausewayServer {
             "{action} {len} characters into '{selector}'",
             len = text.len()
         ))]))
+    }
+
+    #[tool(description = "Read all form fields on the page or within a container. Returns each field's tag, type, name, id, label, value, placeholder, and whether it's required/disabled. Great for understanding a form before filling it.")]
+    async fn read_form(
+        &self,
+        Parameters(ReadFormParams { selector }): Parameters<ReadFormParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let sel = selector.as_deref().unwrap_or("body");
+        let js = format!(
+            r#"(() => {{
+                const container = document.querySelector({sel});
+                if (!container) return {{ error: "Container not found" }};
+                const fields = container.querySelectorAll('input, select, textarea, [contenteditable="true"]');
+                const results = [];
+                for (const el of fields) {{
+                    if (el.type === 'hidden' && !el.name) continue;
+                    const label = el.labels?.[0]?.textContent?.trim()
+                        || el.getAttribute('aria-label')
+                        || el.closest('label')?.textContent?.trim()
+                        || '';
+                    const entry = {{
+                        tag: el.tagName.toLowerCase(),
+                        type: el.type || null,
+                        name: el.name || null,
+                        id: el.id || null,
+                        label: label || null,
+                        value: el.tagName === 'SELECT'
+                            ? el.options[el.selectedIndex]?.text || el.value
+                            : el.isContentEditable
+                                ? el.textContent
+                                : el.value || null,
+                        placeholder: el.placeholder || null,
+                        required: el.required || false,
+                        disabled: el.disabled || false,
+                    }};
+                    if (el.tagName === 'SELECT') {{
+                        entry.options = Array.from(el.options).map(o => ({{ value: o.value, text: o.text, selected: o.selected }}));
+                    }}
+                    if (el.type === 'checkbox' || el.type === 'radio') {{
+                        entry.checked = el.checked;
+                    }}
+                    results.push(entry);
+                }}
+                return {{ count: results.length, fields: results }};
+            }})()"#,
+            sel = serde_json::to_string(sel).unwrap()
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Read form failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        if let Some(v) = value {
+            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                return Err(McpError::invalid_params(err.to_owned(), None));
+            }
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(v).unwrap_or_else(|_| format!("{v}"))
+            )]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text("No form data returned")]))
+        }
     }
 
     #[tool(description = "Fill multiple form fields at once. Takes a JSON object mapping CSS selectors to values. Each field is focused, cleared, and typed into.")]

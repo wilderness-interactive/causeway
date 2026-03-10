@@ -16,17 +16,13 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         return Ok(LaunchResult::Existing { ws_url });
     }
 
-    // If using the default profile (dedicated_profile = false), we need to kill any
-    // existing browser first. Chromium ignores --remote-debugging-port when attaching
-    // to an already-running instance using the same profile.
-    if !config.dedicated_profile {
-        let exe_name = extract_exe_name(&config.executable);
-        if is_process_running(&exe_name) {
-            tracing::info!("Killing existing {exe_name} to relaunch with CDP");
-            kill_process(&exe_name);
-            // Give the OS a moment to release the profile lock
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
+    // Chromium ignores --remote-debugging-port when attaching to an already-running
+    // instance with the same user-data-dir. Kill existing process so we get CDP.
+    let exe_name = extract_exe_name(&config.executable);
+    if is_process_running(&exe_name) {
+        tracing::info!("Killing existing {exe_name} to relaunch with CDP");
+        kill_process(&exe_name);
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     let mut args = vec![
@@ -35,11 +31,16 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         "--no-default-browser-check".to_owned(),
     ];
 
-    // Dedicated profile: use named profile if set, otherwise temp dir
+    // Dedicated profile: use named profile if set, otherwise temp dir.
+    // user_data_dir forces Chromium to launch as an independent process
+    // even if another instance of the same browser is already running.
     if config.dedicated_profile {
         if let Some(ref profile_name) = config.profile {
             tracing::info!("Profile: {profile_name}");
             args.push(format!("--profile-directory={profile_name}"));
+            if let Some(ref data_dir) = config.user_data_dir {
+                args.push(format!("--user-data-dir={data_dir}"));
+            }
         } else {
             let causeway_profile = std::env::temp_dir().join("causeway-profile");
             tracing::info!("Profile: {}", causeway_profile.display());

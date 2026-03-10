@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("CDP WebSocket connected, domains enabled");
 
     let live = Arc::new(LiveConnection::new(conn));
-    let mcp_server = server::CausewayServer::new(live, config.browser.port);
+    let mcp_server = server::CausewayServer::new(live, config.browser.port, config.browser);
     mcp_server.resubscribe_events().await;
 
     let service = mcp_server

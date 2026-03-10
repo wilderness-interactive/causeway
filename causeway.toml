@@ -2,3 +2,5 @@
 executable = "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
 port = 9222
 restore_session = true
+dedicated_profile = true
+profile = "Profile 4"

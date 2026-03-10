@@ -5,21 +5,22 @@ pub struct Config {
     pub browser: BrowserConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
     pub executable: String,
     pub port: u16,
     #[serde(default)]
     pub restore_session: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub dedicated_profile: bool,
     #[serde(default)]
     pub profile: Option<String>,
     #[serde(default)]
+    pub user_data_dir: Option<String>,
+    #[serde(default)]
     pub extensions: Vec<String>,
 }
 
-fn default_true() -> bool { true }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
     let contents =

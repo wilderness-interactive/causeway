@@ -1,6 +1,7 @@
 [browser]
-executable = "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+executable = "C:\\Program Files (x86)\\Microsoft\\Edge Dev\\Application\\msedge.exe"
 port = 9222
 restore_session = true
 dedicated_profile = true
-profile = "Profile 4"
+profile = "Profile 5"
+user_data_dir = "C:\\Users\\jakea\\AppData\\Local\\Microsoft\\Edge Dev\\User Data"

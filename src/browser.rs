@@ -35,11 +35,16 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         "--no-default-browser-check".to_owned(),
     ];
 
-    // Only use a separate profile dir when explicitly requested
+    // Dedicated profile: use named profile if set, otherwise temp dir
     if config.dedicated_profile {
-        let causeway_profile = std::env::temp_dir().join("causeway-profile");
-        tracing::info!("Profile: {}", causeway_profile.display());
-        args.push(format!("--user-data-dir={}", causeway_profile.display()));
+        if let Some(ref profile_name) = config.profile {
+            tracing::info!("Profile: {profile_name}");
+            args.push(format!("--profile-directory={profile_name}"));
+        } else {
+            let causeway_profile = std::env::temp_dir().join("causeway-profile");
+            tracing::info!("Profile: {}", causeway_profile.display());
+            args.push(format!("--user-data-dir={}", causeway_profile.display()));
+        }
     }
 
     // Restore last session so tabs persist across restarts

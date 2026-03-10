@@ -11,11 +11,15 @@ pub struct BrowserConfig {
     pub port: u16,
     #[serde(default)]
     pub restore_session: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub dedicated_profile: bool,
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub extensions: Vec<String>,
 }
+
+fn default_true() -> bool { true }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
     let contents =

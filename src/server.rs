@@ -9,6 +9,7 @@ use rmcp::{
 
 use crate::cdp::{self, LiveConnection};
 use crate::commands;
+use crate::config::BrowserConfig;
 
 // -- Tool parameter structs --
 
@@ -102,6 +103,14 @@ pub struct ClickTextParams {
     pub text: String,
     #[schemars(description = "HTML tag to limit search to (e.g. \"button\", \"a\"). Default: \"*\" (all elements)")]
     pub tag: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClickLinkParams {
+    #[schemars(description = "The text to search for in interactive elements (case-insensitive substring match)")]
+    pub text: String,
+    #[schemars(description = "Which match to click if multiple elements share the same text (0-based). Default: 0 (first match)")]
+    pub index: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -508,6 +517,7 @@ fn ax_walk(
 pub struct CausewayServer {
     live: Arc<LiveConnection>,
     port: u16,
+    browser_config: Arc<BrowserConfig>,
     /// The target ID of the tab we consider "ours". try_reconnect returns here.
     sticky_target: Arc<tokio::sync::Mutex<Option<String>>>,
     console_log: Arc<tokio::sync::Mutex<Vec<ConsoleEntry>>>,
@@ -520,10 +530,11 @@ pub struct CausewayServer {
 
 #[tool_router]
 impl CausewayServer {
-    pub fn new(live: Arc<LiveConnection>, port: u16) -> Self {
+    pub fn new(live: Arc<LiveConnection>, port: u16, browser_config: BrowserConfig) -> Self {
         Self {
             live,
             port,
+            browser_config: Arc::new(browser_config),
             sticky_target: Arc::new(tokio::sync::Mutex::new(None)),
             console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -993,6 +1004,90 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Clicked element with text \"{matched}\" at ({x:.0}, {y:.0})"
         ))]))
+    }
+
+    #[tool(description = "Click an interactive element (link, button, input) by its visible text. Only matches clickable elements. Use index to disambiguate when multiple elements share the same text.")]
+    async fn click_link(
+        &self,
+        Parameters(ClickLinkParams { text, index }): Parameters<ClickLinkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let idx = index.unwrap_or(0);
+
+        let js = format!(
+            r#"(async () => {{
+                const searchText = {text}.toLowerCase();
+                const selector = 'a, button, input, select, textarea, [role="button"], [role="link"], [onclick], [tabindex]';
+                const els = document.querySelectorAll(selector);
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                const matches = [];
+                for (const el of els) {{
+                    const elText = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (!elText.includes(searchText)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;
+                    matches.push({{ el, len: elText.length }});
+                }}
+                matches.sort((a, b) => a.len - b.len);
+                if ({idx} >= matches.length) return {{ error: 'Index ' + {idx} + ' out of range, found ' + matches.length + ' matches' }};
+                const chosen = matches[{idx}];
+                chosen.el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                const rect = chosen.el.getBoundingClientRect();
+                const cx = rect.x + rect.width / 2;
+                const cy = rect.y + rect.height / 2;
+                if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                    return {{ x: cx, y: cy, matched: (chosen.el.textContent || chosen.el.value || '').trim().substring(0, 80), total: matches.length }};
+                }}
+                return null;
+            }})()"#,
+            text = serde_json::to_string(&text).unwrap(),
+            idx = idx,
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
+
+        let coords = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("No interactive element found containing text: \"{text}\""),
+                    None,
+                )
+            })?;
+
+        if coords.is_null() {
+            return Err(McpError::invalid_params(
+                format!("No interactive element found containing text: \"{text}\""),
+                None,
+            ));
+        }
+
+        if let Some(err) = coords.get("error").and_then(|v| v.as_str()) {
+            return Err(McpError::invalid_params(err.to_owned(), None));
+        }
+
+        let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let matched = coords
+            .get("matched")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+        let total = coords.get("total").and_then(|v| v.as_u64()).unwrap_or(1);
+
+        self.snapshot_pre_nav().await;
+        self.execute_seq_reconnect(commands::click(x, y))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
+
+        let mut msg = format!("Clicked \"{matched}\" at ({x:.0}, {y:.0})");
+        if total > 1 {
+            msg.push_str(&format!(" (match {}/{total})", idx + 1));
+        }
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     #[tool(description = "Type text into an element on the page. Focuses the element first, then types character by character.")]
@@ -1860,12 +1955,30 @@ impl CausewayServer {
     }
 
     /// Reconnect CDP — returns to the sticky target if one is set, otherwise any page.
+    /// If the browser is dead, relaunches it automatically.
     async fn try_reconnect(&self) -> Result<(), String> {
         tracing::info!("Attempting CDP reconnect...");
         let sticky = self.sticky_target.lock().await.clone();
-        let ws_url = crate::browser::find_target_ws_url(self.port, sticky.as_deref())
-            .await
-            .map_err(|e| format!("No browser target available: {e}"))?;
+
+        // Try finding an existing target first
+        let ws_url = match crate::browser::find_target_ws_url(self.port, sticky.as_deref()).await {
+            Ok(url) => url,
+            Err(_) => {
+                // Browser is dead — relaunch it
+                tracing::info!("Browser is gone, relaunching...");
+                let launch_result = crate::browser::launch(&self.browser_config)
+                    .await
+                    .map_err(|e| format!("Failed to relaunch browser: {e}"))?;
+                let url = match launch_result {
+                    crate::browser::LaunchResult::Spawned { ws_url, .. } => ws_url,
+                    crate::browser::LaunchResult::Existing { ws_url } => ws_url,
+                };
+                // Clear sticky target — old tab is gone
+                *self.sticky_target.lock().await = None;
+                url
+            }
+        };
+
         let new_conn = cdp::connect_to_target(&ws_url)
             .await
             .map_err(|e| format!("Reconnect failed: {e}"))?;

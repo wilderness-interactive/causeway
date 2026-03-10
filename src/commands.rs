@@ -336,3 +336,44 @@ pub fn emulate_device_metrics(width: u32, height: u32, scale_factor: f64, mobile
 pub fn clear_device_override() -> (&'static str, Value) {
     ("Emulation.clearDeviceMetricsOverride", json!({}))
 }
+
+/// Stealth: inject script before any page JS to hide CDP detection signals.
+/// Runs via Page.addScriptToEvaluateOnNewDocument so it executes before page scripts.
+pub fn add_stealth_script() -> (&'static str, Value) {
+    ("Page.addScriptToEvaluateOnNewDocument", json!({
+        "source": r#"
+            // Hide navigator.webdriver
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // Restore navigator.permissions.query for 'notifications'
+            const origQuery = window.Notification && Notification.permission;
+            if (navigator.permissions) {
+                const origPermQuery = navigator.permissions.query;
+                navigator.permissions.query = (params) => {
+                    if (params.name === 'notifications') {
+                        return Promise.resolve({ state: origQuery || 'prompt' });
+                    }
+                    return origPermQuery.call(navigator.permissions, params);
+                };
+            }
+
+            // Mask chrome.runtime to look like a normal browser (not headless)
+            if (!window.chrome) window.chrome = {};
+            if (!window.chrome.runtime) window.chrome.runtime = {};
+
+            // Remove CDP-specific properties from Error stack traces
+            const origGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+            // Prevent detection of overridden properties
+            const nativeToString = Function.prototype.toString;
+            const overrides = new Map();
+            const handler = {
+                apply: function(target, thisArg, args) {
+                    if (overrides.has(thisArg)) return overrides.get(thisArg);
+                    return nativeToString.call(thisArg);
+                }
+            };
+            Function.prototype.toString = new Proxy(nativeToString, handler);
+            overrides.set(Function.prototype.toString, 'function toString() { [native code] }');
+        "#
+    }))
+}

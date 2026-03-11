@@ -92,6 +92,14 @@ pub struct InspectParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PointInspectParams {
+    #[schemars(description = "X coordinate (pixels from left)")]
+    pub x: f64,
+    #[schemars(description = "Y coordinate (pixels from top)")]
+    pub y: f64,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QueryElementsParams {
     #[schemars(description = "CSS selector to find matching elements")]
     pub selector: String,
@@ -531,6 +539,8 @@ pub struct CausewayServer {
     pending_dialog: Arc<tokio::sync::Mutex<Option<PendingDialog>>>,
     /// URL + title snapshot taken before click/submit actions, for navigation detection.
     pre_nav_snapshot: Arc<tokio::sync::Mutex<(String, String)>>,
+    /// Guard so only one try_reconnect runs at a time — concurrent failures share the result.
+    reconnect_guard: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -542,6 +552,7 @@ impl CausewayServer {
             port,
             browser_config: Arc::new(browser_config),
             sticky_target: Arc::new(tokio::sync::Mutex::new(None)),
+            reconnect_guard: Arc::new(tokio::sync::Mutex::new(())),
             console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1893,6 +1904,67 @@ impl CausewayServer {
         }
     }
 
+    #[tool(description = "Identify the DOM element at specific x/y coordinates. Returns the element and its parent chain with tag, classes, id, role, and text. Use after a screenshot to discover what's at a specific spot — especially useful for custom/obfuscated UIs where CSS selectors are unknown.")]
+    async fn point_inspect(
+        &self,
+        Parameters(PointInspectParams { x, y }): Parameters<PointInspectParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let js = format!(
+            r#"(() => {{
+                const ATTRS = ['id','class','role','type','name','href','aria-label','data-testid','tabindex','onclick'];
+                const el = document.elementFromPoint({x}, {y});
+                if (!el) return null;
+
+                function describe(node) {{
+                    const tag = node.tagName.toLowerCase();
+                    let attrs = {{}};
+                    for (const a of ATTRS) {{
+                        const v = node.getAttribute(a);
+                        if (v && v.length > 0) attrs[a] = v.substring(0, 120);
+                    }}
+                    const text = (node.textContent || '').trim();
+                    const rect = node.getBoundingClientRect();
+                    return {{
+                        tag,
+                        attrs,
+                        text: text.substring(0, 100),
+                        bounds: {{ x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }}
+                    }};
+                }}
+
+                const chain = [];
+                let cur = el;
+                for (let i = 0; i < 6 && cur && cur !== document.documentElement; i++) {{
+                    chain.push(describe(cur));
+                    cur = cur.parentElement;
+                }}
+                return chain;
+            }})()"#,
+            x = x,
+            y = y,
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Point inspect failed: {e}"), None))?;
+
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"));
+
+        match value {
+            Some(serde_json::Value::Null) | None => {
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("No element found at ({x}, {y})")
+                )]))
+            }
+            Some(chain) => {
+                let formatted = serde_json::to_string_pretty(chain).unwrap_or_else(|_| chain.to_string());
+                Ok(CallToolResult::success(vec![Content::text(formatted)]))
+            }
+        }
+    }
+
     #[tool(description = "Find all elements matching a CSS selector and return their tag, text content, key attributes, and count. Useful for finding interactive elements, links, buttons, form fields, etc.")]
     async fn query_elements(
         &self,
@@ -2039,7 +2111,22 @@ impl CausewayServer {
 
     /// Reconnect CDP — returns to the sticky target if one is set, otherwise any page.
     /// If the browser is dead, relaunches it automatically.
+    /// Guarded: only one reconnect runs at a time. Concurrent callers wait and
+    /// share the result (the second caller finds a fresh connection already swapped in).
     async fn try_reconnect(&self) -> Result<(), String> {
+        let _guard = self.reconnect_guard.lock().await;
+
+        // Check if another caller already reconnected while we waited for the guard
+        if self.live.get().await.is_some() {
+            // Quick health check — if the connection is alive, skip reconnect
+            if let Some(conn) = self.live.get().await {
+                if cdp::send(&*conn, "Runtime.evaluate", serde_json::json!({"expression": "1"})).await.is_ok() {
+                    tracing::debug!("Reconnect skipped — connection already restored by another caller");
+                    return Ok(());
+                }
+            }
+        }
+
         tracing::info!("Attempting CDP reconnect...");
         let sticky = self.sticky_target.lock().await.clone();
 

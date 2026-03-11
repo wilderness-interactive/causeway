@@ -220,7 +220,7 @@ pub async fn execute_sequence(
 /// Holds the active CDP connection. All tools read through this.
 /// When a tab switch or reconnect happens, the inner Arc gets replaced.
 pub struct LiveConnection {
-    inner: RwLock<Arc<CdpConnection>>,
+    inner: RwLock<Option<Arc<CdpConnection>>>,
 }
 
 impl std::fmt::Debug for LiveConnection {
@@ -230,21 +230,22 @@ impl std::fmt::Debug for LiveConnection {
 }
 
 impl LiveConnection {
-    pub fn new(conn: CdpConnection) -> Self {
+    /// Create an empty LiveConnection — first tool call will trigger lazy connect.
+    pub fn empty() -> Self {
         Self {
-            inner: RwLock::new(Arc::new(conn)),
+            inner: RwLock::new(None),
         }
     }
 
-    /// Get a snapshot of the current connection.
-    pub async fn get(&self) -> Arc<CdpConnection> {
+    /// Get a snapshot of the current connection, or None if not yet connected.
+    pub async fn get(&self) -> Option<Arc<CdpConnection>> {
         self.inner.read().await.clone()
     }
 
     /// Swap to a new connection (tab switch or reconnect).
     pub async fn swap(&self, new_conn: CdpConnection) {
         let mut guard = self.inner.write().await;
-        *guard = Arc::new(new_conn);
+        *guard = Some(Arc::new(new_conn));
     }
 }
 

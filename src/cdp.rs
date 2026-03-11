@@ -243,8 +243,23 @@ impl LiveConnection {
     }
 
     /// Swap to a new connection (tab switch or reconnect).
+    /// Drains all pending responses on the old connection so in-flight
+    /// callers get an immediate error instead of waiting for the 30s timeout.
     pub async fn swap(&self, new_conn: CdpConnection) {
         let mut guard = self.inner.write().await;
+        if let Some(old) = guard.take() {
+            let mut pending = old.pending.lock().await;
+            let count = pending.len();
+            pending.drain().for_each(|(_, sender)| {
+                let _ = sender.send(Err(CdpErrorData {
+                    code: -1,
+                    message: "Connection replaced".to_owned(),
+                }));
+            });
+            if count > 0 {
+                tracing::debug!("Drained {count} pending responses from old connection");
+            }
+        }
         *guard = Some(Arc::new(new_conn));
     }
 }

@@ -28,33 +28,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::load_config(config_path.to_str().unwrap_or("causeway.toml"))?;
     tracing::info!("Causeway loaded config: {:?}", config.browser);
 
-    let launch_result = browser::launch(&config.browser).await?;
-    let (child, ws_url) = match launch_result {
-        browser::LaunchResult::Spawned { child, ws_url } => {
-            tracing::info!("Launched new browser, CDP at: {ws_url}");
-            (Some(child), ws_url)
-        }
-        browser::LaunchResult::Existing { ws_url } => {
-            tracing::info!("Connected to existing browser, CDP at: {ws_url}");
-            (None, ws_url)
-        }
-    };
-
-    let conn = cdp::connect_to_target(&ws_url).await?;
-    tracing::info!("CDP WebSocket connected, domains enabled");
-
-    let live = Arc::new(LiveConnection::new(conn));
+    // Lazy init: start MCP server immediately, browser launches on first tool call
+    let live = Arc::new(LiveConnection::empty());
     let mcp_server = server::CausewayServer::new(live, config.browser.port, config.browser);
-    mcp_server.resubscribe_events().await;
 
     let service = mcp_server
         .serve(rmcp::transport::io::stdio())
         .await
         .inspect_err(|e| tracing::error!("Causeway MCP error: {e}"))?;
 
-    tracing::info!("Causeway running on stdio");
+    tracing::info!("Causeway running on stdio (browser will launch on first tool call)");
     service.waiting().await?;
 
-    browser::shutdown(child);
     Ok(())
 }

@@ -1,11 +1,11 @@
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::Duration;
 
 use crate::config::BrowserConfig;
 
 /// Launch result: either we spawned a new browser, or connected to an existing one.
 pub enum LaunchResult {
-    Spawned { child: Child, ws_url: String },
+    Spawned { ws_url: String },
     Existing { ws_url: String },
 }
 
@@ -16,17 +16,19 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         return Ok(LaunchResult::Existing { ws_url });
     }
 
-    // A separate user-data-dir lets Chromium launch independently alongside the main
-    // browser. Without one, Chromium piggybacks on the existing process and ignores
-    // --remote-debugging-port, so we must kill it first.
-    let has_separate_data_dir = config.dedicated_profile
-        && (config.user_data_dir.is_some() || config.profile.is_none());
-    if !has_separate_data_dir {
-        let exe_name = extract_exe_name(&config.executable);
-        if is_process_running(&exe_name) {
-            tracing::info!("Killing existing {exe_name} to relaunch with CDP");
-            kill_process(&exe_name);
-            tokio::time::sleep(Duration::from_secs(2)).await;
+    // If we got here, CDP isn't available on the port. Chromium ignores
+    // --remote-debugging-port when piggybacking on an existing process (even
+    // background processes with no visible window). Kill them so the fresh
+    // spawn gets the flag. Safe for other Causeway instances: if any had CDP
+    // active, try_connect_existing above would have already connected.
+    let exe_name = extract_exe_name(&config.executable);
+    if is_process_running(&exe_name) {
+        tracing::info!("Killing existing {exe_name} — CDP unavailable, must relaunch with debugging port");
+        kill_process(&exe_name);
+        // Poll until the process is actually gone
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if !is_process_running(&exe_name) { break; }
         }
     }
 
@@ -63,13 +65,14 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
     }
 
     tracing::info!("Launching browser: {}", config.executable);
-    let child = Command::new(&config.executable)
+    Command::new(&config.executable)
         .args(&args)
         .spawn()
         .map_err(|e| BrowserError::LaunchFailed(e.to_string()))?;
 
-    let ws_url = poll_until_ready(config.port).await?;
-    Ok(LaunchResult::Spawned { child, ws_url })
+    // Poll until CDP is available and targets have stabilized (no more session restore churn)
+    let ws_url = poll_until_stable(config.port).await?;
+    Ok(LaunchResult::Spawned { ws_url })
 }
 
 /// Extract just the executable filename from a full path (e.g. "brave.exe" from the full path)
@@ -144,45 +147,66 @@ async fn try_connect_existing(port: u16) -> Result<String, ()> {
     find_target_ws_url(port, None).await.map_err(|_| ())
 }
 
-async fn poll_until_ready(port: u16) -> Result<String, BrowserError> {
+/// Poll until CDP is available AND page targets have stabilized.
+/// Returns the WS URL of the first stable page target.
+/// Handles both slow browser launches and session restore target churn.
+async fn poll_until_stable(port: u16) -> Result<String, BrowserError> {
     let url = format!("http://localhost:{port}/json");
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| BrowserError::LaunchFailed(e.to_string()))?;
 
-    for _ in 0..30 {
+    let mut last_page_count: Option<usize> = None;
+    let mut stable_streak = 0u32;
+
+    // Poll for up to 60s (120 * 500ms) — covers slow machines
+    for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let response = match client.get(&url).send().await {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(_) => { last_page_count = None; stable_streak = 0; continue; }
         };
 
         let targets: Vec<serde_json::Value> = match response.json().await {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(_) => { last_page_count = None; stable_streak = 0; continue; }
         };
 
-        // Find the first "page" target with a WebSocket URL
-        for target in &targets {
-            if target.get("type").and_then(|t| t.as_str()) == Some("page") {
-                if let Some(ws_url) = target.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
-                    tracing::info!("CDP ready: {ws_url}");
-                    return Ok(ws_url.to_owned());
+        let page_count = targets.iter()
+            .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+            .count();
+
+        if page_count == 0 {
+            last_page_count = None;
+            stable_streak = 0;
+            continue;
+        }
+
+        // Check if target count is stable (same as last check)
+        if last_page_count == Some(page_count) {
+            stable_streak += 1;
+        } else {
+            stable_streak = 1;
+        }
+        last_page_count = Some(page_count);
+
+        // Stable for 2 consecutive checks (1s) — good to go
+        if stable_streak >= 2 {
+            // Grab the first page target
+            for target in &targets {
+                if target.get("type").and_then(|t| t.as_str()) == Some("page") {
+                    if let Some(ws_url) = target.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
+                        tracing::info!("CDP stable ({page_count} page targets): {ws_url}");
+                        return Ok(ws_url.to_owned());
+                    }
                 }
             }
         }
     }
 
     Err(BrowserError::Timeout)
-}
-
-pub fn shutdown(child: Option<Child>) {
-    if let Some(mut c) = child {
-        let _ = c.kill();
-        let _ = c.wait();
-        tracing::info!("Browser process terminated");
-    } else {
-        tracing::info!("Browser was pre-existing, not terminating");
-    }
 }
 
 #[derive(Debug)]
@@ -195,7 +219,7 @@ impl std::fmt::Display for BrowserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BrowserError::LaunchFailed(msg) => write!(f, "Failed to launch browser: {msg}"),
-            BrowserError::Timeout => write!(f, "Browser did not become ready within 15 seconds"),
+            BrowserError::Timeout => write!(f, "Browser did not become ready within 60 seconds"),
         }
     }
 }

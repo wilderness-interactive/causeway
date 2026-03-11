@@ -1491,7 +1491,7 @@ impl CausewayServer {
 
         // Subscribe to CDP events for full navigations
         let mut receiver = {
-            let conn = self.live.get().await;
+            let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
             cdp::subscribe_events(&*conn)
         };
 
@@ -1984,11 +1984,17 @@ impl CausewayServer {
 
     /// Execute a CDP command, retrying once with reconnect on connection failure.
     async fn exec_with_reconnect(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, cdp::CdpError> {
-        match cdp::send(&*self.live.get().await, method, params.clone()).await {
+        // Lazy init: if no connection yet, reconnect first (launches browser if needed)
+        let result = match self.live.get().await {
+            Some(conn) => cdp::send(&*conn, method, params.clone()).await,
+            None => Err(cdp::CdpError::SendFailed),
+        };
+        match result {
             Ok(val) => Ok(val),
             Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
                 self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
-                cdp::send(&*self.live.get().await, method, params).await
+                let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
+                cdp::send(&*conn, method, params).await
             }
             Err(e) => Err(e),
         }
@@ -2002,11 +2008,16 @@ impl CausewayServer {
 
     /// Execute a CDP command sequence with reconnect on failure.
     async fn execute_seq_reconnect(&self, commands: Vec<(&'static str, serde_json::Value)>) -> Result<serde_json::Value, cdp::CdpError> {
-        match cdp::execute_sequence(&*self.live.get().await, commands.clone()).await {
+        let result = match self.live.get().await {
+            Some(conn) => cdp::execute_sequence(&*conn, commands.clone()).await,
+            None => Err(cdp::CdpError::SendFailed),
+        };
+        match result {
             Ok(val) => Ok(val),
             Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
                 self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
-                cdp::execute_sequence(&*self.live.get().await, commands).await
+                let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
+                cdp::execute_sequence(&*conn, commands).await
             }
             Err(e) => Err(e),
         }
@@ -2042,7 +2053,7 @@ impl CausewayServer {
                     .await
                     .map_err(|e| format!("Failed to relaunch browser: {e}"))?;
                 let url = match launch_result {
-                    crate::browser::LaunchResult::Spawned { ws_url, .. } => ws_url,
+                    crate::browser::LaunchResult::Spawned { ws_url } => ws_url,
                     crate::browser::LaunchResult::Existing { ws_url } => ws_url,
                 };
                 // Clear sticky target — old tab is gone
@@ -2085,8 +2096,9 @@ impl CausewayServer {
         Parameters(SwitchTabParams { target_id }): Parameters<SwitchTabParams>,
     ) -> Result<CallToolResult, McpError> {
         // Visually activate the tab
+        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         cdp::send(
-            &*self.live.get().await,
+            &*conn,
             "Target.activateTarget",
             serde_json::json!({ "targetId": target_id }),
         )
@@ -2109,8 +2121,9 @@ impl CausewayServer {
     ) -> Result<CallToolResult, McpError> {
         let target_url = url.as_deref().unwrap_or("about:blank");
 
+        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         let result = cdp::send(
-            &*self.live.get().await,
+            &*conn,
             "Target.createTarget",
             serde_json::json!({ "url": target_url }),
         )
@@ -2140,8 +2153,9 @@ impl CausewayServer {
         &self,
         Parameters(CloseTabParams { target_id }): Parameters<CloseTabParams>,
     ) -> Result<CallToolResult, McpError> {
+        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         cdp::send(
-            &*self.live.get().await,
+            &*conn,
             "Target.closeTarget",
             serde_json::json!({ "targetId": target_id }),
         )
@@ -2741,10 +2755,11 @@ impl CausewayServer {
     /// Subscribe to CDP events from the current connection and spawn a collector task.
     /// Old collector tasks die naturally when their connection's broadcast sender drops.
     pub async fn resubscribe_events(&self) {
-        let receiver = {
-            let conn = self.live.get().await;
-            cdp::subscribe_events(&*conn)
+        let conn = match self.live.get().await {
+            Some(c) => c,
+            None => return, // No connection yet — events will be subscribed on first connect
         };
+        let receiver = cdp::subscribe_events(&*conn);
         let console_log = self.console_log.clone();
         let network_log = self.network_log.clone();
         let pending_dialog = self.pending_dialog.clone();

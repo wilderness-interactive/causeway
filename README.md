@@ -61,17 +61,27 @@ For personal overrides (paths, profiles), create `local_causeway.toml` — same 
 
 ### Connect to Claude Code
 
-Add to your project's `.mcp.json`:
+Causeway is an MCP server — Claude Code needs to know where to find it. Create a file called `.mcp.json` in the root of whatever project you want to use Causeway from (not in the Causeway folder itself):
 
 ```json
 {
   "mcpServers": {
     "causeway": {
       "type": "stdio",
-      "command": "path/to/causeway.exe"
+      "command": "cmd",
+      "args": ["/c", "C:\\path\\to\\causeway\\target\\debug\\causeway.exe"],
+      "cwd": "C:\\path\\to\\causeway"
     }
   }
 }
+```
+
+Replace `C:\\path\\to\\causeway` with wherever you cloned and built Causeway. The `cwd` tells Causeway where to find its config files.
+
+This works in both **VSCode** (Claude Code extension) and the **CLI** (`claude` in terminal). In VSCode, restart the window (`Ctrl+Shift+P` → "Developer: Reload Window") after creating the file. In the CLI, you can also add it with:
+
+```
+claude mcp add causeway -- cmd /c "C:\path\to\causeway\target\debug\causeway.exe"
 ```
 
 Causeway finds its config automatically: working directory, then source root, then next to the binary.
@@ -108,7 +118,7 @@ For advanced users, `dedicated_profile = true` is the smoothest experience.
 
 **"Browser did not become ready"**: The browser failed to start with the debugging flag. This usually means old browser processes are lingering in the background. Open Task Manager, end all instances of your browser (e.g. `brave.exe`, `chrome.exe`, `msedge.exe`), and try again. Causeway does this automatically, but occasionally a process resists.
 
-**Browser closes unexpectedly**: If you're using shared profile mode (the default), this is normal on first connect — Causeway needs to relaunch the browser with the debugging flag. Add `restore_session = true` to your config to keep your tabs.
+**Browser closes unexpectedly**: If you're using shared profile mode (the default), this is normal on first connect — Causeway needs to relaunch the browser with the debugging flag. Add `restore_session = true` to your config to keep your tabs. This defaults to false for privacy.
 
 **Cloudflare blocks the page**: Causeway includes stealth mode to bypass bot detection, but previously set cookies from a blocked session may persist. Use the `clear_storage` tool on the affected domain, then try again.
 

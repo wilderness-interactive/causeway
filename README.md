@@ -69,14 +69,13 @@ Causeway is an MCP server — Claude Code needs to know where to find it. Create
     "causeway": {
       "type": "stdio",
       "command": "cmd",
-      "args": ["/c", "C:\\path\\to\\causeway\\target\\debug\\causeway.exe"],
-      "cwd": "C:\\path\\to\\causeway"
+      "args": ["/c", "C:\\path\\to\\causeway\\target\\debug\\causeway.exe"]
     }
   }
 }
 ```
 
-Replace `C:\\path\\to\\causeway` with wherever you cloned and built Causeway. The `cwd` tells Causeway where to find its config files.
+Replace the path with wherever you cloned and built Causeway. The config files are found automatically relative to the binary.
 
 This works in both **VSCode** (Claude Code extension) and the **CLI** (`claude` in terminal). In VSCode, restart the window (`Ctrl+Shift+P` → "Developer: Reload Window") after creating the file. In the CLI, you can also add it with:
 

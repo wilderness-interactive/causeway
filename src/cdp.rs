@@ -144,7 +144,17 @@ pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
             }
         }
 
-        // WebSocket closed — drop all pending senders
+        // WebSocket closed — drop all pending senders so in-flight callers
+        // get an immediate ResponseDropped instead of waiting for the 30s timeout.
+        // ResponseDropped triggers auto-reconnect in exec_with_reconnect.
+        {
+            let mut map = pending_clone.lock().await;
+            let count = map.len();
+            map.drain().for_each(|(_, sender)| { drop(sender); });
+            if count > 0 {
+                tracing::debug!("WebSocket closed: dropped {count} pending responses");
+            }
+        }
         drop(writer_handle);
     });
 

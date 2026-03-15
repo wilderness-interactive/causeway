@@ -2020,11 +2020,17 @@ impl CausewayServer {
         let url = format!("http://localhost:{}/json", self.port);
         let client = reqwest::Client::new();
 
-        let targets: Vec<serde_json::Value> = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("Failed to list tabs: {e}"), None))?
+        let response = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(_) => {
+                // Browser not running — trigger reconnect (launches browser if needed)
+                self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
+                client.get(&url).send().await
+                    .map_err(|e| McpError::internal_error(format!("Failed to list tabs: {e}"), None))?
+            }
+        };
+
+        let targets: Vec<serde_json::Value> = response
             .json()
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to parse tabs: {e}"), None))?;

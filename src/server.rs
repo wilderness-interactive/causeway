@@ -296,6 +296,16 @@ pub struct ClearStorageParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExtensionEvalParams {
+    #[schemars(description = "Action: 'list' to show running extensions, 'eval' to run JS in an extension's service worker")]
+    pub action: String,
+    #[schemars(description = "Filter extensions by name or URL (substring match, case-insensitive). Used by both 'list' and 'eval'.")]
+    pub query: Option<String>,
+    #[schemars(description = "JavaScript to evaluate in the extension's service worker context. Required for 'eval' action. Runs with userGesture=true so chrome.sidePanel.open() etc. work.")]
+    pub expression: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EmulateDeviceParams {
     #[schemars(description = "Device preset: 'iPhone 14', 'iPhone 14 Pro', 'Pixel 7', 'iPad Air', 'Galaxy S21', or 'reset' to clear emulation")]
     pub device: Option<String>,
@@ -1810,6 +1820,154 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Found {tool_count} WebMCP tool(s):\n\n{formatted}"
         ))]))
+    }
+
+    #[tool(description = "List or evaluate JavaScript in browser extension service workers. Use action='list' to see running extensions, action='eval' to run JS in an extension's context with userGesture=true (enables chrome.sidePanel.open(), chrome.action.openPopup(), etc).")]
+    async fn extension_eval(
+        &self,
+        Parameters(ExtensionEvalParams { action, query, expression }): Parameters<ExtensionEvalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let url = format!("http://localhost:{}/json", self.port);
+        let client = reqwest::Client::new();
+
+        let response = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(_) => {
+                self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
+                client.get(&url).send().await
+                    .map_err(|e| McpError::internal_error(format!("Failed to list targets: {e}"), None))?
+            }
+        };
+
+        let targets: Vec<serde_json::Value> = response
+            .json()
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to parse targets: {e}"), None))?;
+
+        // Filter to extension targets: service_worker, background_page
+        let ext_types = ["service_worker", "background_page"];
+        let mut extensions: Vec<&serde_json::Value> = targets.iter()
+            .filter(|t| {
+                let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                ext_types.contains(&t_type)
+            })
+            .collect();
+
+        // Apply query filter if provided
+        if let Some(ref q) = query {
+            let q_lower = q.to_lowercase();
+            extensions.retain(|t| {
+                let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                title.contains(&q_lower) || url.contains(&q_lower)
+            });
+        }
+
+        match action.as_str() {
+            "list" => {
+                if extensions.is_empty() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "No extension service workers found".to_owned(),
+                    )]));
+                }
+                let mut output = String::new();
+                for ext in &extensions {
+                    let title = ext.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
+                    let url = ext.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                    let t_type = ext.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                    let id = ext.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    output.push_str(&format!("[{t_type}] {title}\n  id: {id}\n  url: {url}\n\n"));
+                }
+                Ok(CallToolResult::success(vec![Content::text(output)]))
+            }
+            "eval" => {
+                let js = expression.ok_or_else(|| McpError::invalid_params(
+                    "expression is required for eval action", None,
+                ))?;
+
+                if extensions.is_empty() {
+                    return Err(McpError::invalid_params(
+                        format!("No extension found matching query: {}", query.unwrap_or_default()),
+                        None,
+                    ));
+                }
+                if extensions.len() > 1 && query.is_none() {
+                    let names: Vec<&str> = extensions.iter()
+                        .map(|t| t.get("title").and_then(|v| v.as_str()).unwrap_or("?"))
+                        .collect();
+                    return Err(McpError::invalid_params(
+                        format!("Multiple extensions found, use query to disambiguate: {:?}", names),
+                        None,
+                    ));
+                }
+
+                let target = extensions[0];
+                let ws_url = target.get("webSocketDebuggerUrl")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::internal_error(
+                        "Extension target has no webSocketDebuggerUrl", None,
+                    ))?;
+
+                // Open a separate CDP connection to the extension's service worker
+                let ext_conn = cdp::connect(ws_url)
+                    .await
+                    .map_err(|e| McpError::internal_error(
+                        format!("Failed to connect to extension: {e}"), None,
+                    ))?;
+
+                // Enable Runtime domain on the extension connection
+                cdp::send(&ext_conn, "Runtime.enable", serde_json::json!({}))
+                    .await
+                    .map_err(|e| McpError::internal_error(
+                        format!("Failed to enable Runtime on extension: {e}"), None,
+                    ))?;
+
+                // Evaluate with userGesture=true so chrome APIs requiring user action work
+                let result = cdp::send(&ext_conn, "Runtime.evaluate", serde_json::json!({
+                    "expression": js,
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                    "userGesture": true,
+                }))
+                .await
+                .map_err(|e| McpError::internal_error(
+                    format!("Extension eval failed: {e}"), None,
+                ))?;
+
+                // Extract result or error
+                let title = target.get("title").and_then(|v| v.as_str()).unwrap_or("extension");
+                if let Some(exception) = result.get("exceptionDetails") {
+                    let text = exception
+                        .get("exception")
+                        .and_then(|e| e.get("description").or(e.get("value")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown error");
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "JS Error in {title}: {text}"
+                    ))]))
+                } else {
+                    let value = result
+                        .get("result")
+                        .and_then(|r| r.get("value"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let formatted = if value.is_string() {
+                        value.as_str().unwrap().to_owned()
+                    } else {
+                        serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{value}"))
+                    };
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "[{title}] {formatted}"
+                    ))]))
+                }
+
+                // ext_conn drops here — separate connection, doesn't affect the main page connection
+            }
+            _ => Err(McpError::invalid_params(
+                format!("Unknown action: {action}. Use 'list' or 'eval'."),
+                None,
+            )),
+        }
     }
 
     #[tool(description = "Inspect the DOM tree starting from a CSS selector. Returns a compact structural view with tag names, key attributes (id, class, href, type, name, value, role, aria-label), and truncated text content. Essential for understanding page structure without screenshots.")]

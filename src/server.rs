@@ -1788,7 +1788,6 @@ impl CausewayServer {
                         else input.checked = !input.checked;
                         input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
                         return {{ found: true, label: lbl.textContent.trim().substring(0, 80), checked: input.checked, method: 'label' }};
                     }}
                 }}
@@ -1802,7 +1801,6 @@ impl CausewayServer {
                     else input.checked = !input.checked;
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
                     return {{ found: true, label: input.name || input.id || input.value, checked: input.checked, method: 'input-attr' }};
                 }}
 
@@ -1831,7 +1829,6 @@ impl CausewayServer {
                         else input.checked = !input.checked;
                         input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
                         return {{ found: true, label: walker.currentNode.textContent.trim().substring(0, 80), checked: input.checked, method: 'nearby-text' }};
                     }}
                 }}
@@ -3466,7 +3463,6 @@ impl CausewayServer {
                                     if (force !== null) input.checked = force; else input.checked = !input.checked;
                                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                    input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
                                     return {{ found: true, label: lbl.textContent.trim().substring(0, 80), checked: input.checked }};
                                 }}
                             }}
@@ -3476,7 +3472,6 @@ impl CausewayServer {
                                 if (force !== null) input.checked = force; else input.checked = !input.checked;
                                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
                                 return {{ found: true, label: input.name || input.id || input.value, checked: input.checked }};
                             }}
                             for (const el of document.querySelectorAll('[role="checkbox"], [role="radio"], [role="switch"]')) {{

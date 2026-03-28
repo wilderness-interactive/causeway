@@ -321,6 +321,14 @@ pub struct EmulateDeviceParams {
     pub device_scale_factor: Option<f64>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ChainParams {
+    #[schemars(description = "Array of actions to execute sequentially with natural delays between them. Each action is an object with an \"action\" field and the parameters for that action.\n\nSupported actions and their parameters:\n- click: { selector } — click by CSS selector\n- click_text: { text, tag? } — click by visible text\n- click_link: { text, index? } — click interactive element by text\n- type_text: { selector, text, clear? } — type into a field\n- press_key: { key } — press a key (Enter, Tab, Escape, etc.)\n- keyboard_chord: { chord } — key combo (Ctrl+A, Ctrl+Shift+T, etc.)\n- select_option: { selector, value } — select dropdown option\n- scroll: { x?, y? } — scroll by pixels\n- wait_for: { selector, timeout_ms? } — wait for element to appear\n- wait_for_text: { text, selector?, timeout_ms? } — wait for text to appear\n- navigate: { url } — navigate to URL\n- evaluate_js: { expression } — run JavaScript\n\nExample: [{\"action\":\"click_text\",\"text\":\"Email\"},{\"action\":\"type_text\",\"selector\":\"#email\",\"text\":\"hi@example.com\"},{\"action\":\"press_key\",\"key\":\"Tab\"},{\"action\":\"type_text\",\"selector\":\"#password\",\"text\":\"secret\"},{\"action\":\"click_text\",\"text\":\"Sign in\"}]")]
+    pub steps: Vec<serde_json::Value>,
+    #[schemars(description = "Base delay between steps in milliseconds. Each step sleeps for this duration ±100ms (randomized). Default: 1000")]
+    pub delay_ms: Option<u64>,
+}
+
 // -- Shared JS helpers --
 
 /// Build JS that finds the first visible, in-viewport element matching a selector.
@@ -2999,6 +3007,302 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Custom device: {w}x{h} @{scale}x, touch={enable_touch}"
         ))]))
+    }
+
+    #[tool(description = "Execute a sequence of browser actions with natural human-like delays between each step. Runs all steps in a single call — far faster than individual tool calls since there's no model round-trip between steps. Each step sleeps for ~1 second (configurable) with ±100ms random jitter. Stops on first failure and reports which step failed. Perfect for form filling, multi-step navigation, and any workflow where you'd otherwise chain 5-10 separate tool calls.")]
+    async fn chain(
+        &self,
+        Parameters(ChainParams { steps, delay_ms }): Parameters<ChainParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use rand::Rng;
+
+        if steps.is_empty() {
+            return Err(McpError::invalid_params("No steps provided".to_owned(), None));
+        }
+
+        let base_delay = delay_ms.unwrap_or(1000);
+        let mut results: Vec<String> = Vec::new();
+
+        for (i, step) in steps.iter().enumerate() {
+            let action = step.get("action").and_then(|v| v.as_str()).ok_or_else(|| {
+                McpError::invalid_params(format!("Step {}: missing \"action\" field", i + 1), None)
+            })?;
+
+            // Sleep between steps (not before the first one)
+            if i > 0 {
+                let step_delay = step.get("sleep").and_then(|v| v.as_u64()).unwrap_or(base_delay);
+                let jitter = rand::rng().random_range(0u64..=200).saturating_sub(100);
+                let actual_delay = if rand::rng().random_bool(0.5) {
+                    step_delay.saturating_add(jitter)
+                } else {
+                    step_delay.saturating_sub(jitter)
+                };
+                tokio::time::sleep(std::time::Duration::from_millis(actual_delay)).await;
+            }
+
+            let step_result = match action {
+                "click" => {
+                    let selector = step.get("selector").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: click requires \"selector\"", i + 1), None)
+                    })?;
+                    let js = js_find_visible_element(selector);
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
+                        .ok_or_else(|| McpError::invalid_params(format!("Step {}: no element found for: {selector}", i + 1), None))?;
+                    let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    self.snapshot_pre_nav().await;
+                    self.execute_seq_reconnect(commands::click(x, y)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
+                    format!("Clicked '{selector}' at ({x:.0}, {y:.0})")
+                }
+                "click_text" => {
+                    let text = step.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: click_text requires \"text\"", i + 1), None)
+                    })?;
+                    let tag_filter = step.get("tag").and_then(|v| v.as_str()).unwrap_or("*");
+                    let js = format!(
+                        r#"(async () => {{
+                            const searchText = {text}.toLowerCase();
+                            const els = document.querySelectorAll({tag});
+                            const vw = window.innerWidth; const vh = window.innerHeight;
+                            const candidates = [];
+                            for (const el of els) {{
+                                const elText = el.textContent.trim().toLowerCase();
+                                if (!elText.includes(searchText)) continue;
+                                const r = el.getBoundingClientRect();
+                                if (r.width === 0 || r.height === 0) continue;
+                                candidates.push({{ el, len: elText.length }});
+                            }}
+                            candidates.sort((a, b) => a.len - b.len);
+                            for (const {{ el }} of candidates) {{
+                                el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                                const rect = el.getBoundingClientRect();
+                                const cx = rect.x + rect.width / 2; const cy = rect.y + rect.height / 2;
+                                if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) return {{ x: cx, y: cy, matched: el.textContent.trim().substring(0, 80) }};
+                            }}
+                            return null;
+                        }})()"#,
+                        text = serde_json::to_string(text).unwrap(),
+                        tag = serde_json::to_string(tag_filter).unwrap()
+                    );
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
+                        .ok_or_else(|| McpError::invalid_params(format!("Step {}: no element with text \"{text}\"", i + 1), None))?;
+                    let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let matched = coords.get("matched").and_then(|v| v.as_str()).unwrap_or(text);
+                    self.snapshot_pre_nav().await;
+                    self.execute_seq_reconnect(commands::click(x, y)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
+                    format!("Clicked \"{matched}\" at ({x:.0}, {y:.0})")
+                }
+                "click_link" => {
+                    let text = step.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: click_link requires \"text\"", i + 1), None)
+                    })?;
+                    let idx = step.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let js = format!(
+                        r#"(async () => {{
+                            const searchText = {text}.toLowerCase();
+                            const selector = 'a, button, input, select, textarea, [role="button"], [role="link"], [onclick], [tabindex]';
+                            const els = document.querySelectorAll(selector);
+                            const vw = window.innerWidth; const vh = window.innerHeight;
+                            const matches = [];
+                            for (const el of els) {{
+                                const elText = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                                if (!elText.includes(searchText)) continue;
+                                const r = el.getBoundingClientRect();
+                                if (r.width === 0 || r.height === 0) continue;
+                                matches.push({{ el, len: elText.length }});
+                            }}
+                            matches.sort((a, b) => a.len - b.len);
+                            if ({idx} >= matches.length) return {{ error: 'Index ' + {idx} + ' out of range, found ' + matches.length + ' matches' }};
+                            const chosen = matches[{idx}];
+                            chosen.el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                            const rect = chosen.el.getBoundingClientRect();
+                            const cx = rect.x + rect.width / 2; const cy = rect.y + rect.height / 2;
+                            if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) return {{ x: cx, y: cy, matched: (chosen.el.textContent || chosen.el.value || '').trim().substring(0, 80), total: matches.length }};
+                            return null;
+                        }})()"#,
+                        text = serde_json::to_string(text).unwrap(),
+                        idx = idx,
+                    );
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
+                        .ok_or_else(|| McpError::invalid_params(format!("Step {}: no interactive element with text \"{text}\"", i + 1), None))?;
+                    if let Some(err) = coords.get("error").and_then(|v| v.as_str()) {
+                        return Err(McpError::invalid_params(format!("Step {}: {err}", i + 1), None));
+                    }
+                    let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let matched = coords.get("matched").and_then(|v| v.as_str()).unwrap_or(text);
+                    self.snapshot_pre_nav().await;
+                    self.execute_seq_reconnect(commands::click(x, y)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
+                    format!("Clicked \"{matched}\" at ({x:.0}, {y:.0})")
+                }
+                "type_text" => {
+                    let selector = step.get("selector").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: type_text requires \"selector\"", i + 1), None)
+                    })?;
+                    let text = step.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: type_text requires \"text\"", i + 1), None)
+                    })?;
+                    let should_clear = step.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let js = js_focus_visible_element(selector, should_clear);
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let focused = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !focused {
+                        return Err(McpError::invalid_params(format!("Step {}: element not focusable: {selector}", i + 1), None));
+                    }
+                    self.execute_seq_reconnect(commands::type_text(text)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: type failed: {e}", i + 1), None))?;
+                    format!("Typed {} chars into '{selector}'", text.len())
+                }
+                "press_key" => {
+                    let key = step.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: press_key requires \"key\"", i + 1), None)
+                    })?;
+                    self.execute_seq_reconnect(commands::press_key(key)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: key press failed: {e}", i + 1), None))?;
+                    format!("Pressed {key}")
+                }
+                "keyboard_chord" => {
+                    let chord = step.get("chord").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: keyboard_chord requires \"chord\"", i + 1), None)
+                    })?;
+                    let (modifiers, key) = parse_chord(chord);
+                    self.execute_seq_reconnect(commands::key_chord(&key, modifiers)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: chord failed: {e}", i + 1), None))?;
+                    format!("Pressed {chord}")
+                }
+                "select_option" => {
+                    let selector = step.get("selector").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: select_option requires \"selector\"", i + 1), None)
+                    })?;
+                    let value = step.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: select_option requires \"value\"", i + 1), None)
+                    })?;
+                    let js = format!(
+                        r#"(() => {{ const el = document.querySelector({sel}); if (!el) return false; el.value = {val}; el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }})()"#,
+                        sel = serde_json::to_string(selector).unwrap(),
+                        val = serde_json::to_string(value).unwrap()
+                    );
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let ok = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !ok {
+                        return Err(McpError::invalid_params(format!("Step {}: select element not found: {selector}", i + 1), None));
+                    }
+                    format!("Selected '{value}' in '{selector}'")
+                }
+                "scroll" => {
+                    let x = step.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = step.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    self.execute_reconnect(commands::scroll(x, y)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: scroll failed: {e}", i + 1), None))?;
+                    format!("Scrolled ({x:.0}, {y:.0})")
+                }
+                "wait_for" => {
+                    let selector = step.get("selector").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: wait_for requires \"selector\"", i + 1), None)
+                    })?;
+                    let timeout = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
+                    let interval = 200u64;
+                    let max_attempts = timeout / interval;
+                    let mut found = false;
+                    for _ in 0..max_attempts {
+                        let js = format!("document.querySelector({sel}) !== null", sel = serde_json::to_string(selector).unwrap());
+                        let result = self.execute_reconnect(commands::evaluate(&js)).await
+                            .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                        if result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
+                            found = true;
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+                    }
+                    if !found {
+                        return Err(McpError::internal_error(format!("Step {}: timeout waiting for '{selector}' after {timeout}ms", i + 1), None));
+                    }
+                    format!("Found '{selector}'")
+                }
+                "wait_for_text" => {
+                    let text = step.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: wait_for_text requires \"text\"", i + 1), None)
+                    })?;
+                    let container = step.get("selector").and_then(|v| v.as_str()).unwrap_or("body");
+                    let timeout = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
+                    let interval = 200u64;
+                    let max_attempts = timeout / interval;
+                    let mut found = false;
+                    for _ in 0..max_attempts {
+                        let js = format!(
+                            "document.querySelector({sel}).innerText.toLowerCase().includes({text})",
+                            sel = serde_json::to_string(container).unwrap(),
+                            text = serde_json::to_string(&text.to_lowercase()).unwrap()
+                        );
+                        let result = self.execute_reconnect(commands::evaluate(&js)).await
+                            .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                        if result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
+                            found = true;
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+                    }
+                    if !found {
+                        return Err(McpError::internal_error(format!("Step {}: timeout waiting for text \"{text}\" after {timeout}ms", i + 1), None));
+                    }
+                    format!("Found text \"{text}\"")
+                }
+                "navigate" => {
+                    let url = step.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: navigate requires \"url\"", i + 1), None)
+                    })?;
+                    self.execute_reconnect(commands::navigate(url)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: navigate failed: {e}", i + 1), None))?;
+                    let _ = self.execute_reconnect(commands::evaluate(
+                        "new Promise(resolve => { if (document.readyState === 'complete') { resolve(); return; } window.addEventListener('load', () => resolve(), { once: true }); setTimeout(resolve, 8000); })",
+                    )).await;
+                    let title = self.execute_reconnect(commands::evaluate("document.title")).await
+                        .ok()
+                        .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
+                        .unwrap_or_else(|| "(unknown)".to_owned());
+                    format!("Navigated to {url} — {title}")
+                }
+                "evaluate_js" => {
+                    let expression = step.get("expression").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: evaluate_js requires \"expression\"", i + 1), None)
+                    })?;
+                    let result = self.execute_reconnect(commands::evaluate(expression)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: JS eval failed: {e}", i + 1), None))?;
+                    let value = result.get("result").and_then(|r| r.get("value"));
+                    let display = value.map(|v| {
+                        if let Some(s) = v.as_str() { s.to_owned() } else { v.to_string() }
+                    }).unwrap_or_else(|| "undefined".to_owned());
+                    let truncated = if display.len() > 200 { format!("{}...", &display[..200]) } else { display };
+                    format!("JS: {truncated}")
+                }
+                unknown => {
+                    return Err(McpError::invalid_params(
+                        format!("Step {}: unknown action \"{unknown}\". Supported: click, click_text, click_link, type_text, press_key, keyboard_chord, select_option, scroll, wait_for, wait_for_text, navigate, evaluate_js", i + 1),
+                        None,
+                    ));
+                }
+            };
+
+            results.push(format!("{}. {step_result}", i + 1));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            format!("Chain complete ({} steps):\n{}", results.len(), results.join("\n"))
+        )]))
     }
 
     // ---- Event subscription (non-tool methods) ----

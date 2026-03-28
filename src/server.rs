@@ -640,6 +640,7 @@ impl CausewayServer {
         let qualities: &[u8] = &[80, 50, 30, 15];
 
         let mut final_data = String::new();
+        let mut used_quality = 80u8;
         for &q in qualities {
             let result = self.execute_reconnect(commands::screenshot(Some(q), "webp"))
                 .await
@@ -651,23 +652,25 @@ impl CausewayServer {
                 .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
 
             final_data = data.to_owned();
+            used_quality = q;
             if final_data.len() <= MAX_BASE64 {
                 break;
             }
-            tracing::debug!("Screenshot too large at quality {q} ({:.1}MB), retrying lower", final_data.len() as f64 / 1_000_000.0);
+            tracing::info!("Screenshot {:.1}MB at quality {q}, retrying lower", final_data.len() as f64 / 1_000_000.0);
         }
+
+        let size_kb = final_data.len() / 1024;
 
         if final_data.len() > MAX_BASE64 {
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Screenshot too large even at lowest quality ({:.1}MB). Use accessibility_snapshot or read_page instead.",
-                final_data.len() as f64 / 1_000_000.0
+                "Screenshot too large even at lowest quality ({size_kb}KB base64). Use accessibility_snapshot or read_page instead."
             ))]));
         }
 
-        Ok(CallToolResult::success(vec![Content::image(
-            final_data,
-            "image/webp",
-        )]))
+        Ok(CallToolResult::success(vec![
+            Content::image(final_data, "image/webp"),
+            Content::text(format!("{size_kb}KB (q{used_quality})")),
+        ]))
     }
 
     #[tool(description = "Read the text content of the current page. Returns the visible text.")]

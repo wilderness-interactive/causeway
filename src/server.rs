@@ -306,6 +306,14 @@ pub struct ExtensionEvalParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ToggleParams {
+    #[schemars(description = "Label text, nearby text, or name/id of the checkbox or radio button to toggle (case-insensitive substring match)")]
+    pub label: String,
+    #[schemars(description = "Force a specific state: true = checked, false = unchecked. Omit to toggle.")]
+    pub checked: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EmulateDeviceParams {
     #[schemars(description = "Device preset: 'iPhone 14', 'iPhone 14 Pro', 'Pixel 7', 'iPad Air', 'Galaxy S21', or 'reset' to clear emulation")]
     pub device: Option<String>,
@@ -323,7 +331,7 @@ pub struct EmulateDeviceParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ChainParams {
-    #[schemars(description = "Array of actions to execute sequentially with natural delays between them. Each action is an object with an \"action\" field and the parameters for that action.\n\nSupported actions and their parameters:\n- click: { selector } — click by CSS selector\n- click_text: { text, tag? } — click by visible text\n- click_link: { text, index? } — click interactive element by text\n- type_text: { selector, text, clear? } — type into a field\n- press_key: { key } — press a key (Enter, Tab, Escape, etc.)\n- keyboard_chord: { chord } — key combo (Ctrl+A, Ctrl+Shift+T, etc.)\n- select_option: { selector, value } — select dropdown option\n- scroll: { x?, y? } — scroll by pixels\n- wait_for: { selector, timeout_ms? } — wait for element to appear\n- wait_for_text: { text, selector?, timeout_ms? } — wait for text to appear\n- navigate: { url } — navigate to URL\n- evaluate_js: { expression } — run JavaScript\n\nExample: [{\"action\":\"click_text\",\"text\":\"Email\"},{\"action\":\"type_text\",\"selector\":\"#email\",\"text\":\"hi@example.com\"},{\"action\":\"press_key\",\"key\":\"Tab\"},{\"action\":\"type_text\",\"selector\":\"#password\",\"text\":\"secret\"},{\"action\":\"click_text\",\"text\":\"Sign in\"}]")]
+    #[schemars(description = "Array of actions to execute sequentially with natural delays between them. Each action is an object with an \"action\" field and the parameters for that action.\n\nSupported actions and their parameters:\n- click: { selector } — click by CSS selector\n- click_text: { text, tag? } — click by visible text\n- click_link: { text, index? } — click interactive element by text\n- type_text: { selector, text, clear? } — type into a field\n- press_key: { key } — press a key (Enter, Tab, Escape, etc.)\n- keyboard_chord: { chord } — key combo (Ctrl+A, Ctrl+Shift+T, etc.)\n- select_option: { selector, value } — select dropdown option\n- scroll: { x?, y? } — scroll by pixels\n- wait_for: { selector, timeout_ms? } — wait for element to appear\n- wait_for_text: { text, selector?, timeout_ms? } — wait for text to appear\n- navigate: { url } — navigate to URL\n- evaluate_js: { expression } — run JavaScript\n- toggle: { label, checked? } — toggle checkbox/radio by label text\n\nExample: [{\"action\":\"click_text\",\"text\":\"Email\"},{\"action\":\"type_text\",\"selector\":\"#email\",\"text\":\"hi@example.com\"},{\"action\":\"press_key\",\"key\":\"Tab\"},{\"action\":\"type_text\",\"selector\":\"#password\",\"text\":\"secret\"},{\"action\":\"click_text\",\"text\":\"Sign in\"}]")]
     pub steps: Vec<serde_json::Value>,
     #[schemars(description = "Base delay between steps in milliseconds. Each step sleeps for this duration ±100ms (randomized). Default: 1000")]
     pub delay_ms: Option<u64>,
@@ -1737,6 +1745,114 @@ impl CausewayServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Selected value '{value}' in '{selector}'"
+        ))]))
+    }
+
+    #[tool(description = "Toggle a checkbox or radio button by its label text, name, or nearby text. Works via JavaScript — no mouse simulation — so it handles hidden inputs, custom styled controls, and Material Design components that ignore click events. Use this instead of click/click_text when targeting checkboxes or radio buttons.")]
+    async fn toggle(
+        &self,
+        Parameters(ToggleParams { label, checked }): Parameters<ToggleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let force_state = match checked {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "null",
+        };
+
+        let js = format!(
+            r#"(() => {{
+                const search = {label}.toLowerCase();
+                const force = {force};
+
+                // Strategy 1: find input by label[for] text match
+                for (const lbl of document.querySelectorAll('label')) {{
+                    if (!lbl.textContent.trim().toLowerCase().includes(search)) continue;
+                    const forId = lbl.getAttribute('for');
+                    const input = forId ? document.getElementById(forId)
+                        : lbl.querySelector('input[type="checkbox"], input[type="radio"]');
+                    if (input) {{
+                        if (force !== null) input.checked = force;
+                        else input.checked = !input.checked;
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                        return {{ found: true, label: lbl.textContent.trim().substring(0, 80), checked: input.checked, method: 'label' }};
+                    }}
+                }}
+
+                // Strategy 2: find input whose name/id/value contains search text
+                for (const input of document.querySelectorAll('input[type="checkbox"], input[type="radio"]')) {{
+                    const haystack = [input.name, input.id, input.value,
+                        input.getAttribute('aria-label') || ''].join(' ').toLowerCase();
+                    if (!haystack.includes(search)) continue;
+                    if (force !== null) input.checked = force;
+                    else input.checked = !input.checked;
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                    return {{ found: true, label: input.name || input.id || input.value, checked: input.checked, method: 'input-attr' }};
+                }}
+
+                // Strategy 3: find any element with role=checkbox or role=radio
+                for (const el of document.querySelectorAll('[role="checkbox"], [role="radio"], [role="switch"]')) {{
+                    const elText = (el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (!elText.includes(search)) continue;
+                    const isChecked = el.getAttribute('aria-checked') === 'true';
+                    const newState = force !== null ? force : !isChecked;
+                    el.setAttribute('aria-checked', String(newState));
+                    el.click();
+                    return {{ found: true, label: elText.substring(0, 80), checked: newState, method: 'aria-role' }};
+                }}
+
+                // Strategy 4: walk text nodes and find nearest input
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {{
+                    if (!walker.currentNode.textContent.trim().toLowerCase().includes(search)) continue;
+                    const parent = walker.currentNode.parentElement;
+                    if (!parent) continue;
+                    const container = parent.closest('label, div, li, span, td, fieldset');
+                    if (!container) continue;
+                    const input = container.querySelector('input[type="checkbox"], input[type="radio"]');
+                    if (input) {{
+                        if (force !== null) input.checked = force;
+                        else input.checked = !input.checked;
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                        return {{ found: true, label: walker.currentNode.textContent.trim().substring(0, 80), checked: input.checked, method: 'nearby-text' }};
+                    }}
+                }}
+
+                return {{ found: false }};
+            }})()"#,
+            label = serde_json::to_string(&label).unwrap(),
+            force = force_state,
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Toggle failed: {e}"), None))?;
+
+        let val = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .ok_or_else(|| McpError::internal_error("No result from toggle".to_owned(), None))?;
+
+        let found = val.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !found {
+            return Err(McpError::invalid_params(
+                format!("No checkbox or radio button found matching: \"{label}\""),
+                None,
+            ));
+        }
+
+        let matched_label = val.get("label").and_then(|v| v.as_str()).unwrap_or("(unknown)");
+        let is_checked = val.get("checked").and_then(|v| v.as_bool()).unwrap_or(false);
+        let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let state = if is_checked { "checked" } else { "unchecked" };
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Toggled \"{matched_label}\" → {state} (via {method})"
         ))]))
     }
 
@@ -3300,9 +3416,69 @@ impl CausewayServer {
                     let truncated = if display.len() > 200 { format!("{}...", &display[..200]) } else { display };
                     format!("JS: {truncated}")
                 }
+                "toggle" => {
+                    let label = step.get("label").and_then(|v| v.as_str()).ok_or_else(|| {
+                        McpError::invalid_params(format!("Step {}: toggle requires \"label\"", i + 1), None)
+                    })?;
+                    let force_state = match step.get("checked").and_then(|v| v.as_bool()) {
+                        Some(true) => "true",
+                        Some(false) => "false",
+                        None => "null",
+                    };
+                    let js = format!(
+                        r#"(() => {{
+                            const search = {label}.toLowerCase();
+                            const force = {force};
+                            for (const lbl of document.querySelectorAll('label')) {{
+                                if (!lbl.textContent.trim().toLowerCase().includes(search)) continue;
+                                const forId = lbl.getAttribute('for');
+                                const input = forId ? document.getElementById(forId) : lbl.querySelector('input[type="checkbox"], input[type="radio"]');
+                                if (input) {{
+                                    if (force !== null) input.checked = force; else input.checked = !input.checked;
+                                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                                    return {{ found: true, label: lbl.textContent.trim().substring(0, 80), checked: input.checked }};
+                                }}
+                            }}
+                            for (const input of document.querySelectorAll('input[type="checkbox"], input[type="radio"]')) {{
+                                const h = [input.name, input.id, input.value, input.getAttribute('aria-label') || ''].join(' ').toLowerCase();
+                                if (!h.includes(search)) continue;
+                                if (force !== null) input.checked = force; else input.checked = !input.checked;
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                input.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                                return {{ found: true, label: input.name || input.id || input.value, checked: input.checked }};
+                            }}
+                            for (const el of document.querySelectorAll('[role="checkbox"], [role="radio"], [role="switch"]')) {{
+                                const t = (el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                                if (!t.includes(search)) continue;
+                                const isChecked = el.getAttribute('aria-checked') === 'true';
+                                const newState = force !== null ? force : !isChecked;
+                                el.setAttribute('aria-checked', String(newState));
+                                el.click();
+                                return {{ found: true, label: t.substring(0, 80), checked: newState }};
+                            }}
+                            return {{ found: false }};
+                        }})()"#,
+                        label = serde_json::to_string(label).unwrap(),
+                        force = force_state,
+                    );
+                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
+                    let val = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
+                        .ok_or_else(|| McpError::invalid_params(format!("Step {}: no checkbox/radio found for \"{label}\"", i + 1), None))?;
+                    let found = val.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !found {
+                        return Err(McpError::invalid_params(format!("Step {}: no checkbox/radio found for \"{label}\"", i + 1), None));
+                    }
+                    let matched = val.get("label").and_then(|v| v.as_str()).unwrap_or(label);
+                    let state = if val.get("checked").and_then(|v| v.as_bool()).unwrap_or(false) { "checked" } else { "unchecked" };
+                    format!("Toggled \"{matched}\" → {state}")
+                }
                 unknown => {
                     return Err(McpError::invalid_params(
-                        format!("Step {}: unknown action \"{unknown}\". Supported: click, click_text, click_link, type_text, press_key, keyboard_chord, select_option, scroll, wait_for, wait_for_text, navigate, evaluate_js", i + 1),
+                        format!("Step {}: unknown action \"{unknown}\". Supported: click, click_text, click_link, type_text, press_key, keyboard_chord, select_option, scroll, wait_for, wait_for_text, navigate, evaluate_js, toggle", i + 1),
                         None,
                     ));
                 }

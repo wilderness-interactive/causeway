@@ -24,12 +24,7 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
     let exe_name = extract_exe_name(&config.executable);
     if is_process_running(&exe_name) {
         tracing::info!("Killing existing {exe_name} — CDP unavailable, must relaunch with debugging port");
-        kill_process(&exe_name);
-        // Poll until the process is actually gone
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            if !is_process_running(&exe_name) { break; }
-        }
+        kill_and_wait(&exe_name).await?;
     }
 
     let mut args = vec![
@@ -99,11 +94,36 @@ fn is_process_running(exe_name: &str) -> bool {
     }
 }
 
-/// Kill all processes with this name (Windows)
-fn kill_process(exe_name: &str) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/IM", exe_name])
-        .output();
+/// Kill all processes with this name and wait until they're actually gone.
+/// Retries the kill if processes survive, because Chromium spawns many child
+/// processes that can respawn or linger (crashpad, updater, GPU process).
+async fn kill_and_wait(exe_name: &str) -> Result<(), BrowserError> {
+    // Kill, check, re-kill if needed. 30s total outer bound.
+    for tick in 0..120 {
+        if !is_process_running(exe_name) {
+            tracing::info!("{exe_name} fully terminated");
+            return Ok(());
+        }
+
+        // Kill on first tick and every 3 seconds thereafter
+        if tick % 12 == 0 {
+            let attempt = tick / 12 + 1;
+            tracing::info!("taskkill attempt {attempt} for {exe_name}");
+            match Command::new("taskkill").args(["/F", "/IM", exe_name]).output() {
+                Ok(o) if !o.status.success() => {
+                    tracing::warn!("taskkill: {}", String::from_utf8_lossy(&o.stderr).trim());
+                }
+                Err(e) => tracing::warn!("taskkill error: {e}"),
+                Ok(_) => {}
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    Err(BrowserError::LaunchFailed(
+        format!("Could not kill {exe_name} after 30s — is another program holding it?")
+    ))
 }
 
 /// Find the WebSocket URL for a specific target ID, or the first page target if None.

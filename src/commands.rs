@@ -113,10 +113,13 @@ pub fn hover(x: f64, y: f64) -> (&'static str, Value) {
 pub fn type_text(text: &str) -> Vec<(&'static str, Value)> {
     text.chars()
         .flat_map(|c| {
-            let s = c.to_string();
-            vec![
-                key_event("char", &s),
-            ]
+            if c == '\n' {
+                // Newlines need Enter key dispatch, not char event
+                press_key("Enter")
+            } else {
+                let s = c.to_string();
+                vec![key_event("char", &s)]
+            }
         })
         .collect()
 }

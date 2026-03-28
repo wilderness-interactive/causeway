@@ -356,7 +356,10 @@ fn js_find_visible_element(selector: &str) -> String {
                 const rect = el.getBoundingClientRect();
                 const cx = rect.x + rect.width / 2;
                 const cy = rect.y + rect.height / 2;
-                if (cx >= 0 && cy >= 0 && cx <= vw && cy <= vh) {{
+                if (cx < 0 || cy < 0 || cx > vw || cy > vh) continue;
+                // Verify this element (or a child/parent) is actually at these coordinates
+                const hit = document.elementFromPoint(cx, cy);
+                if (hit && (el.contains(hit) || hit.contains(el) || hit === el)) {{
                     return {{ x: cx, y: cy }};
                 }}
             }}
@@ -996,7 +999,7 @@ impl CausewayServer {
         ))]))
     }
 
-    #[tool(description = "Click an element by its visible text content. More reliable than CSS selectors on dynamic UIs. Finds the first visible, in-viewport element whose text contains the search string.")]
+    #[tool(description = "Click an element by its visible text content. More reliable than CSS selectors on dynamic UIs. Finds the first visible, in-viewport element whose text, value, or aria-label contains the search string. Works on buttons, links, inputs (including submit buttons by their value), and any element with text.")]
     async fn click_text(
         &self,
         Parameters(ClickTextParams { text, tag }): Parameters<ClickTextParams>,
@@ -1011,11 +1014,13 @@ impl CausewayServer {
                 const vh = window.innerHeight;
                 const candidates = [];
                 for (const el of els) {{
-                    const elText = el.textContent.trim().toLowerCase();
-                    if (!elText.includes(searchText)) continue;
+                    const elText = (el.textContent || '').trim().toLowerCase();
+                    const elValue = (el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (!elText.includes(searchText) && !elValue.includes(searchText)) continue;
                     const r = el.getBoundingClientRect();
                     if (r.width === 0 || r.height === 0) continue;
-                    candidates.push({{ el, len: elText.length }});
+                    const matchLen = elText.includes(searchText) ? elText.length : elValue.length;
+                    candidates.push({{ el, len: matchLen }});
                 }}
                 candidates.sort((a, b) => a.len - b.len);
                 for (const {{ el }} of candidates) {{

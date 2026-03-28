@@ -635,27 +635,37 @@ impl CausewayServer {
 
     #[tool(description = "Take a screenshot of the current page. Returns the image as base64 WebP (smaller than PNG).")]
     async fn screenshot(&self) -> Result<CallToolResult, McpError> {
-        // Try quality 80 first, drop to 40 if over 10MB base64 (~7.5MB decoded)
-        let result = self.execute_reconnect(commands::screenshot(Some(80), "webp"))
-            .await
-            .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
+        // Cascade down quality until under 5MB base64 (~3.75MB decoded)
+        const MAX_BASE64: usize = 5_000_000;
+        let qualities: &[u8] = &[80, 50, 30, 15];
 
-        let data = result
-            .get("data")
-            .and_then(|d| d.as_str())
-            .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
-
-        let data = if data.len() > 10_000_000 {
-            let retry = self.execute_reconnect(commands::screenshot(Some(40), "webp"))
+        let mut final_data = String::new();
+        for &q in qualities {
+            let result = self.execute_reconnect(commands::screenshot(Some(q), "webp"))
                 .await
-                .map_err(|e| McpError::internal_error(format!("Screenshot retry failed: {e}"), None))?;
-            retry.get("data").and_then(|d| d.as_str()).unwrap_or(data).to_owned()
-        } else {
-            data.to_owned()
-        };
+                .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
+
+            let data = result
+                .get("data")
+                .and_then(|d| d.as_str())
+                .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
+
+            final_data = data.to_owned();
+            if final_data.len() <= MAX_BASE64 {
+                break;
+            }
+            tracing::debug!("Screenshot too large at quality {q} ({:.1}MB), retrying lower", final_data.len() as f64 / 1_000_000.0);
+        }
+
+        if final_data.len() > MAX_BASE64 {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Screenshot too large even at lowest quality ({:.1}MB). Use accessibility_snapshot or read_page instead.",
+                final_data.len() as f64 / 1_000_000.0
+            ))]));
+        }
 
         Ok(CallToolResult::success(vec![Content::image(
-            data,
+            final_data,
             "image/webp",
         )]))
     }
@@ -2918,25 +2928,41 @@ impl CausewayServer {
         let w = clip.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let h = clip.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-        let screenshot_result = self.exec_with_reconnect(
-            "Page.captureScreenshot",
-            serde_json::json!({
-                "format": "webp",
-                "quality": 80,
-                "captureBeyondViewport": true,
-                "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1 },
-            }),
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
+        const MAX_BASE64: usize = 5_000_000;
+        let qualities: &[u8] = &[80, 50, 30, 15];
+        let mut final_data = String::new();
 
-        let data = screenshot_result
-            .get("data")
-            .and_then(|d| d.as_str())
-            .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
+        for &q in qualities {
+            let screenshot_result = self.exec_with_reconnect(
+                "Page.captureScreenshot",
+                serde_json::json!({
+                    "format": "webp",
+                    "quality": q,
+                    "captureBeyondViewport": true,
+                    "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1 },
+                }),
+            )
+            .await
+            .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
+
+            let data = screenshot_result
+                .get("data")
+                .and_then(|d| d.as_str())
+                .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
+
+            final_data = data.to_owned();
+            if final_data.len() <= MAX_BASE64 { break; }
+        }
+
+        if final_data.len() > MAX_BASE64 {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Element screenshot too large even at lowest quality ({:.1}MB). Try a smaller element or use read_text.",
+                final_data.len() as f64 / 1_000_000.0
+            ))]));
+        }
 
         Ok(CallToolResult::success(vec![Content::image(
-            data.to_owned(),
+            final_data,
             "image/webp",
         )]))
     }

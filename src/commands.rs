@@ -43,6 +43,7 @@ pub fn mouse_event(event_type: &str, x: f64, y: f64, button: &str, click_count: 
 /// Build a full click sequence (press + release) at coordinates.
 pub fn click(x: f64, y: f64) -> Vec<(&'static str, Value)> {
     vec![
+        mouse_event("mouseMoved", x, y, "none", 0),
         mouse_event("mousePressed", x, y, "left", 1),
         mouse_event("mouseReleased", x, y, "left", 1),
     ]

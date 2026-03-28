@@ -625,9 +625,10 @@ impl CausewayServer {
         ))]))
     }
 
-    #[tool(description = "Take a screenshot of the current page. Returns the image as base64 PNG.")]
+    #[tool(description = "Take a screenshot of the current page. Returns the image as base64 WebP (smaller than PNG).")]
     async fn screenshot(&self) -> Result<CallToolResult, McpError> {
-        let result = self.execute_reconnect(commands::screenshot(None, "png"))
+        // Try quality 80 first, drop to 40 if over 10MB base64 (~7.5MB decoded)
+        let result = self.execute_reconnect(commands::screenshot(Some(80), "webp"))
             .await
             .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
 
@@ -636,9 +637,18 @@ impl CausewayServer {
             .and_then(|d| d.as_str())
             .ok_or_else(|| McpError::internal_error("No screenshot data returned".to_owned(), None))?;
 
+        let data = if data.len() > 10_000_000 {
+            let retry = self.execute_reconnect(commands::screenshot(Some(40), "webp"))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Screenshot retry failed: {e}"), None))?;
+            retry.get("data").and_then(|d| d.as_str()).unwrap_or(data).to_owned()
+        } else {
+            data.to_owned()
+        };
+
         Ok(CallToolResult::success(vec![Content::image(
-            data.to_owned(),
-            "image/png",
+            data,
+            "image/webp",
         )]))
     }
 
@@ -2795,7 +2805,8 @@ impl CausewayServer {
         let screenshot_result = self.exec_with_reconnect(
             "Page.captureScreenshot",
             serde_json::json!({
-                "format": "png",
+                "format": "webp",
+                "quality": 80,
                 "captureBeyondViewport": true,
                 "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1 },
             }),
@@ -2810,7 +2821,7 @@ impl CausewayServer {
 
         Ok(CallToolResult::success(vec![Content::image(
             data.to_owned(),
-            "image/png",
+            "image/webp",
         )]))
     }
 
@@ -3009,7 +3020,7 @@ impl CausewayServer {
         ))]))
     }
 
-    #[tool(description = "Execute a sequence of browser actions with natural human-like delays between each step. Runs all steps in a single call — far faster than individual tool calls since there's no model round-trip between steps. Each step sleeps for ~1 second (configurable) with ±100ms random jitter. Stops on first failure and reports which step failed. Perfect for form filling, multi-step navigation, and any workflow where you'd otherwise chain 5-10 separate tool calls.")]
+    #[tool(description = "Batch multiple browser actions into one call with human-like timing. PREFER THIS over calling click/type_text/press_key individually when you have 2+ steps planned — it's faster (one round-trip vs many) and adds natural ~1s delays between steps. Supports: click, click_text, click_link, type_text, press_key, keyboard_chord, select_option, scroll, wait_for, wait_for_text, navigate, evaluate_js. Each step can override the delay with a 'sleep' field (ms). Stops on first failure and reports which step failed. Example: filling a login form is one chain call, not five separate tool calls.")]
     async fn chain(
         &self,
         Parameters(ChainParams { steps, delay_ms }): Parameters<ChainParams>,

@@ -314,6 +314,14 @@ pub struct ToggleParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InspectStylesParams {
+    #[schemars(description = "CSS selector of the element to inspect")]
+    pub selector: String,
+    #[schemars(description = "Specific CSS properties to inspect (e.g. [\"font-size\", \"color\", \"padding\"]). Omit for common layout/typography properties.")]
+    pub properties: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EmulateDeviceParams {
     #[schemars(description = "Device preset: 'iPhone 14', 'iPhone 14 Pro', 'Pixel 7', 'iPad Air', 'Galaxy S21', or 'reset' to clear emulation")]
     pub device: Option<String>,
@@ -2270,6 +2278,147 @@ impl CausewayServer {
                 Ok(CallToolResult::success(vec![Content::text(formatted)]))
             }
         }
+    }
+
+    #[tool(description = "Get the declared CSS styles for an element — shows the actual authored values (rem, var(), %, etc.) not just resolved pixels. Resolves CSS variable references to their declared values. Use this instead of getComputedStyle when you need the real design tokens.")]
+    async fn inspect_styles(
+        &self,
+        Parameters(InspectStylesParams { selector, properties }): Parameters<InspectStylesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let default_props = vec![
+            "font-size", "font-weight", "font-family", "line-height", "letter-spacing",
+            "color", "background-color", "background",
+            "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+            "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+            "width", "max-width", "min-width", "height", "max-height", "min-height",
+            "display", "position", "gap", "border-radius",
+            "border", "border-top", "border-bottom", "border-left", "border-right",
+            "box-shadow", "text-align", "text-transform", "opacity",
+        ];
+
+        let props_json = match &properties {
+            Some(p) => serde_json::to_string(p).unwrap(),
+            None => serde_json::to_string(&default_props).unwrap(),
+        };
+
+        let js = format!(
+            r#"(() => {{
+                const el = document.querySelector({sel});
+                if (!el) return {{ error: "Element not found" }};
+
+                const props = {props};
+                const computed = getComputedStyle(el);
+                const results = [];
+
+                // Collect all matched CSS rules for this element
+                const ruleMap = new Map();
+                for (const sheet of document.styleSheets) {{
+                    try {{
+                        for (const rule of sheet.cssRules || []) {{
+                            if (rule.selectorText && el.matches(rule.selectorText)) {{
+                                for (const prop of props) {{
+                                    const val = rule.style.getPropertyValue(prop);
+                                    if (val) ruleMap.set(prop, {{ value: val.trim(), selector: rule.selectorText }});
+                                }}
+                            }}
+                        }}
+                    }} catch (e) {{ /* cross-origin sheets */ }}
+                }}
+
+                // Also check inline styles
+                for (const prop of props) {{
+                    const inline = el.style.getPropertyValue(prop);
+                    if (inline) ruleMap.set(prop, {{ value: inline.trim(), selector: "inline" }});
+                }}
+
+                // Resolve var() references
+                function resolveVar(value) {{
+                    const varMatch = value.match(/var\(--([^,)]+)/);
+                    if (!varMatch) return null;
+                    const varName = '--' + varMatch[1].trim();
+                    // Walk up the tree to find where the variable is defined
+                    let node = el;
+                    while (node) {{
+                        const val = getComputedStyle(node).getPropertyValue(varName).trim();
+                        if (val) return {{ varName, resolved: val }};
+                        node = node.parentElement;
+                    }}
+                    return null;
+                }}
+
+                for (const prop of props) {{
+                    const rule = ruleMap.get(prop);
+                    const computedVal = computed.getPropertyValue(prop).trim();
+                    if (!rule && !computedVal) continue;
+
+                    const entry = {{ property: prop, computed: computedVal }};
+                    if (rule) {{
+                        entry.declared = rule.value;
+                        entry.from = rule.selector;
+                        const resolved = resolveVar(rule.value);
+                        if (resolved) {{
+                            entry.variable = resolved.varName;
+                            entry.resolvedVar = resolved.resolved;
+                        }}
+                    }}
+                    results.push(entry);
+                }}
+
+                // Get element info
+                const tag = el.tagName.toLowerCase();
+                const cls = el.className ? '.' + el.className.split(/\s+/).join('.') : '';
+                const id = el.id ? '#' + el.id : '';
+
+                return {{ element: tag + id + cls, results }};
+            }})()"#,
+            sel = serde_json::to_string(&selector).unwrap(),
+            props = props_json,
+        );
+
+        let result = self.execute_reconnect(commands::evaluate(&js))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Style inspection failed: {e}"), None))?;
+
+        let val = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .ok_or_else(|| McpError::internal_error("No result from style inspection".to_owned(), None))?;
+
+        if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+            return Err(McpError::invalid_params(err.to_owned(), None));
+        }
+
+        let element = val.get("element").and_then(|v| v.as_str()).unwrap_or("?");
+        let results = val.get("results").and_then(|v| v.as_array());
+
+        let mut output = format!("Styles for: {element}\n\n");
+
+        if let Some(entries) = results {
+            for entry in entries {
+                let prop = entry.get("property").and_then(|v| v.as_str()).unwrap_or("?");
+                let computed = entry.get("computed").and_then(|v| v.as_str()).unwrap_or("");
+                let declared = entry.get("declared").and_then(|v| v.as_str());
+                let from = entry.get("from").and_then(|v| v.as_str());
+                let var_name = entry.get("variable").and_then(|v| v.as_str());
+                let resolved = entry.get("resolvedVar").and_then(|v| v.as_str());
+
+                if let Some(decl) = declared {
+                    output.push_str(&format!("{prop}: {decl}"));
+                    if let (Some(vn), Some(rv)) = (var_name, resolved) {
+                        output.push_str(&format!("  →  {vn}: {rv}"));
+                    }
+                    output.push_str(&format!("  (computed: {computed})"));
+                    if let Some(f) = from {
+                        output.push_str(&format!("  [{f}]"));
+                    }
+                } else {
+                    output.push_str(&format!("{prop}: {computed}"));
+                }
+                output.push('\n');
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Find all elements matching a CSS selector and return their tag, text content, key attributes, and count. Useful for finding interactive elements, links, buttons, form fields, etc.")]

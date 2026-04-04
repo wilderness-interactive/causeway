@@ -578,6 +578,8 @@ pub struct CausewayServer {
     pre_nav_snapshot: Arc<tokio::sync::Mutex<(String, String)>>,
     /// Guard so only one try_reconnect runs at a time — concurrent failures share the result.
     reconnect_guard: Arc<tokio::sync::Mutex<()>>,
+    /// First navigate opens a new tab so concurrent sessions don't fight over tabs.
+    first_navigate: Arc<std::sync::atomic::AtomicBool>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -594,6 +596,7 @@ impl CausewayServer {
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
             pre_nav_snapshot: Arc::new(tokio::sync::Mutex::new((String::new(), String::new()))),
+            first_navigate: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             tool_router: Self::tool_router(),
         }
     }
@@ -603,10 +606,32 @@ impl CausewayServer {
         &self,
         Parameters(NavigateParams { url }): Parameters<NavigateParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Page.navigate returns after the navigation commits (new document is ready).
-        self.execute_reconnect(commands::navigate(&url))
-            .await
-            .map_err(|e| McpError::internal_error(format!("Navigate failed: {e}"), None))?;
+        // First navigate of this session: open a new tab so we don't hijack another session's tab.
+        if self.first_navigate.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            // Ensure browser is running (lazy init triggers reconnect if needed)
+            if self.live.get().await.is_none() {
+                self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
+            }
+            if let Some(conn) = self.live.get().await {
+                let result = cdp::send(&*conn, "Target.createTarget", serde_json::json!({ "url": &url })).await;
+                if let Ok(res) = result {
+                    if let Some(target_id) = res.get("targetId").and_then(|v| v.as_str()) {
+                        let tid = target_id.to_owned();
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if self.reconnect_to_target(&tid).await.is_ok() {
+                            *self.sticky_target.lock().await = Some(tid.clone());
+                            // Fall through to the wait-for-load + title logic below
+                        }
+                    }
+                }
+                // If new tab failed for any reason, fall through to normal navigate
+            }
+        } else {
+            // Normal navigate: same tab
+            self.execute_reconnect(commands::navigate(&url))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Navigate failed: {e}"), None))?;
+        }
 
         // Wait for the page to fully load (readyState = 'complete'). 8s cap.
         let _ = self.execute_reconnect(commands::evaluate(

@@ -2669,6 +2669,8 @@ impl CausewayServer {
         &self,
         Parameters(SwitchTabParams { target_id }): Parameters<SwitchTabParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Explicitly chose a tab — no need for first-navigate to open another
+        self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
         // Visually activate the tab
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         cdp::send(
@@ -2693,6 +2695,8 @@ impl CausewayServer {
         &self,
         Parameters(NewTabParams { url }): Parameters<NewTabParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Already opening a new tab — no need for first-navigate to open another
+        self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
         let target_url = url.as_deref().unwrap_or("about:blank");
 
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;

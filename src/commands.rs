@@ -5,15 +5,6 @@ pub fn navigate(url: &str) -> (&'static str, Value) {
     ("Page.navigate", json!({ "url": url }))
 }
 
-/// Capture a screenshot as base64 PNG. Returns ("Page.captureScreenshot", params).
-pub fn screenshot(quality: Option<u8>, format: &str) -> (&'static str, Value) {
-    let mut params = json!({ "format": format });
-    if let Some(q) = quality {
-        params["quality"] = json!(q);
-    }
-    ("Page.captureScreenshot", params)
-}
-
 /// Evaluate a JavaScript expression. Returns ("Runtime.evaluate", params).
 pub fn evaluate(expression: &str) -> (&'static str, Value) {
     (

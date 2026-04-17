@@ -673,12 +673,40 @@ impl CausewayServer {
     async fn screenshot(&self) -> Result<CallToolResult, McpError> {
         // Cascade down quality until under 5MB base64 (~3.75MB decoded)
         const MAX_BASE64: usize = 5_000_000;
+        const MAX_DIM: f64 = 2000.0;
         let qualities: &[u8] = &[80, 50, 30, 15];
+
+        // Get viewport dimensions to compute scale if needed (Claude API limits to 2000px)
+        let dims_result = self.execute_reconnect(commands::evaluate(
+            "JSON.stringify({ w: window.innerWidth, h: window.innerHeight })"
+        )).await.ok();
+        let (vw, vh) = dims_result
+            .as_ref()
+            .and_then(|r| r.get("result")?.get("value")?.as_str())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .map(|v| (
+                v.get("w").and_then(|n| n.as_f64()).unwrap_or(1280.0),
+                v.get("h").and_then(|n| n.as_f64()).unwrap_or(800.0),
+            ))
+            .unwrap_or((1280.0, 800.0));
+
+        let max_dim = vw.max(vh);
+        let scale = if max_dim > MAX_DIM { MAX_DIM / max_dim } else { 1.0 };
 
         let mut final_data = String::new();
         let mut used_quality = 80u8;
         for &q in qualities {
-            let result = self.execute_reconnect(commands::screenshot(Some(q), "webp"))
+            let params = if scale < 1.0 {
+                serde_json::json!({
+                    "format": "webp",
+                    "quality": q,
+                    "clip": { "x": 0, "y": 0, "width": vw, "height": vh, "scale": scale },
+                })
+            } else {
+                serde_json::json!({ "format": "webp", "quality": q })
+            };
+
+            let result = self.exec_with_reconnect("Page.captureScreenshot", params)
                 .await
                 .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
 
@@ -703,9 +731,15 @@ impl CausewayServer {
             ))]));
         }
 
+        let scale_note = if scale < 1.0 {
+            format!(" @{:.0}% ({}×{})", scale * 100.0, (vw * scale) as u32, (vh * scale) as u32)
+        } else {
+            String::new()
+        };
+
         Ok(CallToolResult::success(vec![
             Content::image(final_data, "image/webp"),
-            Content::text(format!("{size_kb}KB (q{used_quality})")),
+            Content::text(format!("{size_kb}KB (q{used_quality}){scale_note}")),
         ]))
     }
 
@@ -3112,8 +3146,12 @@ impl CausewayServer {
         let h = clip.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
         const MAX_BASE64: usize = 5_000_000;
+        const MAX_DIM: f64 = 2000.0;
         let qualities: &[u8] = &[80, 50, 30, 15];
         let mut final_data = String::new();
+
+        let max_dim = w.max(h);
+        let scale = if max_dim > MAX_DIM { MAX_DIM / max_dim } else { 1.0 };
 
         for &q in qualities {
             let screenshot_result = self.exec_with_reconnect(
@@ -3122,7 +3160,7 @@ impl CausewayServer {
                     "format": "webp",
                     "quality": q,
                     "captureBeyondViewport": true,
-                    "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1 },
+                    "clip": { "x": x, "y": y, "width": w, "height": h, "scale": scale },
                 }),
             )
             .await

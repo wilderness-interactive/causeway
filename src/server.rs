@@ -676,22 +676,24 @@ impl CausewayServer {
         const MAX_DIM: f64 = 2000.0;
         let qualities: &[u8] = &[80, 50, 30, 15];
 
-        // Get viewport dimensions to compute scale if needed (Claude API limits to 2000px)
+        // Get viewport dimensions + devicePixelRatio (actual image pixels = logical × DPR)
         let dims_result = self.execute_reconnect(commands::evaluate(
-            "JSON.stringify({ w: window.innerWidth, h: window.innerHeight })"
+            "JSON.stringify({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })"
         )).await.ok();
-        let (vw, vh) = dims_result
+        let (vw, vh, dpr) = dims_result
             .as_ref()
             .and_then(|r| r.get("result")?.get("value")?.as_str())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .map(|v| (
                 v.get("w").and_then(|n| n.as_f64()).unwrap_or(1280.0),
                 v.get("h").and_then(|n| n.as_f64()).unwrap_or(800.0),
+                v.get("dpr").and_then(|n| n.as_f64()).unwrap_or(1.0),
             ))
-            .unwrap_or((1280.0, 800.0));
+            .unwrap_or((1280.0, 800.0, 1.0));
 
-        let max_dim = vw.max(vh);
-        let scale = if max_dim > MAX_DIM { MAX_DIM / max_dim } else { 1.0 };
+        // Actual output pixels = logical × DPR. Scale down if that exceeds 2000.
+        let max_output_dim = vw.max(vh) * dpr;
+        let scale = if max_output_dim > MAX_DIM { MAX_DIM / max_output_dim } else { 1.0 };
 
         let mut final_data = String::new();
         let mut used_quality = 80u8;
@@ -732,7 +734,7 @@ impl CausewayServer {
         }
 
         let scale_note = if scale < 1.0 {
-            format!(" @{:.0}% ({}×{})", scale * 100.0, (vw * scale) as u32, (vh * scale) as u32)
+            format!(" @{:.0}% ({}×{})", scale * 100.0, (vw * dpr * scale) as u32, (vh * dpr * scale) as u32)
         } else {
             String::new()
         };
@@ -3125,6 +3127,7 @@ impl CausewayServer {
                     y: rect.y + window.scrollY,
                     width: rect.width,
                     height: rect.height,
+                    dpr: window.devicePixelRatio,
                 }};
             }})()"#,
             sel = serde_json::to_string(&selector).unwrap()
@@ -3144,14 +3147,15 @@ impl CausewayServer {
         let y = clip.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let w = clip.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let h = clip.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let dpr = clip.get("dpr").and_then(|v| v.as_f64()).unwrap_or(1.0);
 
         const MAX_BASE64: usize = 5_000_000;
         const MAX_DIM: f64 = 2000.0;
         let qualities: &[u8] = &[80, 50, 30, 15];
         let mut final_data = String::new();
 
-        let max_dim = w.max(h);
-        let scale = if max_dim > MAX_DIM { MAX_DIM / max_dim } else { 1.0 };
+        let max_output_dim = w.max(h) * dpr;
+        let scale = if max_output_dim > MAX_DIM { MAX_DIM / max_output_dim } else { 1.0 };
 
         for &q in qualities {
             let screenshot_result = self.exec_with_reconnect(

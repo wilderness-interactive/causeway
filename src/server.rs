@@ -580,6 +580,9 @@ pub struct CausewayServer {
     reconnect_guard: Arc<tokio::sync::Mutex<()>>,
     /// First navigate opens a new tab so concurrent sessions don't fight over tabs.
     first_navigate: Arc<std::sync::atomic::AtomicBool>,
+    /// Locked-in browserContextId (profile). Set on first sticky connect, used to
+    /// filter list_tabs and create new tabs in the same profile.
+    sticky_browser_context_id: Arc<tokio::sync::Mutex<Option<String>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -597,7 +600,36 @@ impl CausewayServer {
             pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
             pre_nav_snapshot: Arc::new(tokio::sync::Mutex::new((String::new(), String::new()))),
             first_navigate: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            sticky_browser_context_id: Arc::new(tokio::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Look up the browserContextId of a given target. Returns None if not found.
+    async fn target_browser_context_id(&self, target_id: &str) -> Option<String> {
+        let conn = self.live.get().await?;
+        let result = cdp::send(&*conn, "Target.getTargets", serde_json::json!({})).await.ok()?;
+        let targets = result.get("targetInfos")?.as_array()?;
+        for t in targets {
+            if t.get("targetId").and_then(|v| v.as_str()) == Some(target_id) {
+                return t.get("browserContextId").and_then(|v| v.as_str()).map(|s| s.to_owned());
+            }
+        }
+        None
+    }
+
+    /// Capture the browserContextId of the current sticky target if we don't have one yet.
+    async fn ensure_sticky_context(&self) {
+        let mut guard = self.sticky_browser_context_id.lock().await;
+        if guard.is_some() { return; }
+        let sticky = self.sticky_target.lock().await.clone();
+        let target_id = match sticky {
+            Some(t) => t,
+            None => return,
+        };
+        if let Some(ctx_id) = self.target_browser_context_id(&target_id).await {
+            tracing::info!("Locked Causeway to browserContextId (profile): {ctx_id}");
+            *guard = Some(ctx_id);
         }
     }
 
@@ -613,7 +645,14 @@ impl CausewayServer {
                 self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
             }
             if let Some(conn) = self.live.get().await {
-                let result = cdp::send(&*conn, "Target.createTarget", serde_json::json!({ "url": &url })).await;
+                // Lock onto our profile (browserContextId) before creating the tab
+                self.ensure_sticky_context().await;
+                let sticky_ctx = self.sticky_browser_context_id.lock().await.clone();
+                let mut params = serde_json::json!({ "url": &url });
+                if let Some(ctx) = &sticky_ctx {
+                    params["browserContextId"] = serde_json::json!(ctx);
+                }
+                let result = cdp::send(&*conn, "Target.createTarget", params).await;
                 if let Ok(res) = result {
                     if let Some(target_id) = res.get("targetId").and_then(|v| v.as_str()) {
                         let tid = target_id.to_owned();
@@ -2552,6 +2591,29 @@ impl CausewayServer {
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to parse tabs: {e}"), None))?;
 
+        // Capture our sticky profile if we haven't yet
+        self.ensure_sticky_context().await;
+        let sticky_ctx = self.sticky_browser_context_id.lock().await.clone();
+
+        // Build targetId → browserContextId map via Target.getTargets (the /json HTTP
+        // endpoint doesn't include browserContextId, so we cross-reference here).
+        let context_map: std::collections::HashMap<String, String> = {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(result) = self.exec_with_reconnect("Target.getTargets", serde_json::json!({})).await {
+                if let Some(infos) = result.get("targetInfos").and_then(|v| v.as_array()) {
+                    for t in infos {
+                        if let (Some(tid), Some(ctx)) = (
+                            t.get("targetId").and_then(|v| v.as_str()),
+                            t.get("browserContextId").and_then(|v| v.as_str()),
+                        ) {
+                            map.insert(tid.to_owned(), ctx.to_owned());
+                        }
+                    }
+                }
+            }
+            map
+        };
+
         // Get current page URL to mark the active CDP tab
         let current_url = self.execute_reconnect(commands::evaluate("window.location.href"))
             .await
@@ -2559,19 +2621,32 @@ impl CausewayServer {
             .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()));
 
         let mut output = String::new();
+        let mut filtered = 0usize;
         for target in &targets {
-            if target.get("type").and_then(|t| t.as_str()) == Some("page") {
-                let id = target.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let title = target.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
-                let tab_url = target.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-                let active = current_url.as_deref() == Some(tab_url);
-                let marker = if active { " *" } else { "" };
-                output.push_str(&format!("[{id}]{marker} {title}\n  {tab_url}\n\n"));
+            if target.get("type").and_then(|t| t.as_str()) != Some("page") { continue; }
+            let id = target.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+
+            // Filter by sticky browserContextId if set
+            if let Some(ref want_ctx) = sticky_ctx {
+                if let Some(tab_ctx) = context_map.get(id) {
+                    if tab_ctx != want_ctx {
+                        filtered += 1;
+                        continue;
+                    }
+                }
             }
+
+            let title = target.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
+            let tab_url = target.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let active = current_url.as_deref() == Some(tab_url);
+            let marker = if active { " *" } else { "" };
+            output.push_str(&format!("[{id}]{marker} {title}\n  {tab_url}\n\n"));
         }
 
         if output.is_empty() {
-            output = "No open tabs found".to_owned();
+            output = "No open tabs found in this profile".to_owned();
+        } else if filtered > 0 {
+            output.push_str(&format!("\n({filtered} tab(s) in other profiles hidden)"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -2735,14 +2810,19 @@ impl CausewayServer {
         self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
         let target_url = url.as_deref().unwrap_or("about:blank");
 
+        // Ensure we know which profile we belong to
+        self.ensure_sticky_context().await;
+        let sticky_ctx = self.sticky_browser_context_id.lock().await.clone();
+
+        let mut params = serde_json::json!({ "url": target_url });
+        if let Some(ctx) = &sticky_ctx {
+            params["browserContextId"] = serde_json::json!(ctx);
+        }
+
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-        let result = cdp::send(
-            &*conn,
-            "Target.createTarget",
-            serde_json::json!({ "url": target_url }),
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("New tab failed: {e}"), None))?;
+        let result = cdp::send(&*conn, "Target.createTarget", params)
+            .await
+            .map_err(|e| McpError::internal_error(format!("New tab failed: {e}"), None))?;
 
         let target_id = result
             .get("targetId")

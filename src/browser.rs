@@ -3,17 +3,14 @@ use std::time::Duration;
 
 use crate::config::BrowserConfig;
 
-/// Launch result: either we spawned a new browser, or connected to an existing one.
-pub enum LaunchResult {
-    Spawned { ws_url: String },
-    Existing { ws_url: String },
-}
-
-pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError> {
+/// Ensure a browser with CDP is running. Connects to an existing one if the
+/// debugging port is live, otherwise spawns a fresh instance. The caller
+/// discovers the WebSocket URL separately via browser_ws_url / find_target_ws_url.
+pub async fn launch(config: &BrowserConfig) -> Result<(), BrowserError> {
     // Check if CDP is already available (browser already running with debugging port)
-    if let Ok(ws_url) = try_connect_existing(config.port).await {
+    if try_connect_existing(config.port).await.is_ok() {
         tracing::info!("Found existing browser with CDP on port {}", config.port);
-        return Ok(LaunchResult::Existing { ws_url });
+        return Ok(());
     }
 
     // If we got here, CDP isn't available on the port. Chromium ignores
@@ -66,8 +63,8 @@ pub async fn launch(config: &BrowserConfig) -> Result<LaunchResult, BrowserError
         .map_err(|e| BrowserError::LaunchFailed(e.to_string()))?;
 
     // Poll until CDP is available and targets have stabilized (no more session restore churn)
-    let ws_url = poll_until_stable(config.port).await?;
-    Ok(LaunchResult::Spawned { ws_url })
+    poll_until_stable(config.port).await?;
+    Ok(())
 }
 
 /// Extract just the executable filename from a full path (e.g. "brave.exe" from the full path)
@@ -165,6 +162,30 @@ pub async fn find_target_ws_url(port: u16, target_id: Option<&str>) -> Result<St
 
 async fn try_connect_existing(port: u16) -> Result<String, ()> {
     find_target_ws_url(port, None).await.map_err(|_| ())
+}
+
+/// Get the browser-level CDP WebSocket URL (for issuing Target.* commands).
+/// This endpoint exists as long as the browser is alive, independent of any tab.
+pub async fn browser_ws_url(port: u16) -> Result<String, BrowserError> {
+    let url = format!("http://localhost:{port}/json/version");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| BrowserError::LaunchFailed(e.to_string()))?;
+
+    let info: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| BrowserError::Timeout)?
+        .json()
+        .await
+        .map_err(|_| BrowserError::Timeout)?;
+
+    info.get("webSocketDebuggerUrl")
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_owned())
+        .ok_or(BrowserError::Timeout)
 }
 
 /// Poll until CDP is available AND page targets have stabilized.

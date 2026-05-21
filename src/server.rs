@@ -2707,52 +2707,126 @@ impl CausewayServer {
         }
     }
 
-    /// Reconnect CDP — returns to the sticky target if one is set, otherwise any page.
-    /// If the browser is dead, relaunches it automatically.
-    /// Guarded: only one reconnect runs at a time. Concurrent callers wait and
-    /// share the result (the second caller finds a fresh connection already swapped in).
+    /// Reconnect CDP, staying within our locked profile (browserContextId).
+    /// Priority: the sticky tab if alive → any tab in our profile → a fresh tab
+    /// in our profile. Never hijacks a tab from another Edge profile. Relaunches
+    /// the browser if it's dead. Guarded so only one reconnect runs at a time.
     async fn try_reconnect(&self) -> Result<(), String> {
         let _guard = self.reconnect_guard.lock().await;
 
         // Check if another caller already reconnected while we waited for the guard
-        if self.live.get().await.is_some() {
-            // Quick health check — if the connection is alive, skip reconnect
-            if let Some(conn) = self.live.get().await {
-                if cdp::send(&*conn, "Runtime.evaluate", serde_json::json!({"expression": "1"})).await.is_ok() {
-                    tracing::debug!("Reconnect skipped — connection already restored by another caller");
-                    return Ok(());
-                }
+        if let Some(conn) = self.live.get().await {
+            if cdp::send(&*conn, "Runtime.evaluate", serde_json::json!({"expression": "1"})).await.is_ok() {
+                tracing::debug!("Reconnect skipped — connection already restored by another caller");
+                return Ok(());
             }
         }
 
         tracing::info!("Attempting CDP reconnect...");
         let sticky = self.sticky_target.lock().await.clone();
+        let locked_ctx = self.sticky_browser_context_id.lock().await.clone();
 
-        // Try finding an existing target first
-        let ws_url = match crate::browser::find_target_ws_url(self.port, sticky.as_deref()).await {
-            Ok(url) => url,
+        // Step 1: ensure the browser is reachable. The browser-level endpoint
+        // exists independent of tabs — failing to find a *tab* never means
+        // the browser is dead (that was the old bug: missing tab → false relaunch).
+        let browser_ws = match crate::browser::browser_ws_url(self.port).await {
+            Ok(ws) => ws,
             Err(_) => {
-                // Browser is dead — relaunch it
-                tracing::info!("Browser is gone, relaunching...");
-                let launch_result = crate::browser::launch(&self.browser_config)
+                tracing::info!("Browser unreachable, relaunching...");
+                crate::browser::launch(&self.browser_config)
                     .await
                     .map_err(|e| format!("Failed to relaunch browser: {e}"))?;
-                let url = match launch_result {
-                    crate::browser::LaunchResult::Spawned { ws_url } => ws_url,
-                    crate::browser::LaunchResult::Existing { ws_url } => ws_url,
-                };
-                // Clear sticky target — old tab is gone
                 *self.sticky_target.lock().await = None;
-                url
+                crate::browser::browser_ws_url(self.port)
+                    .await
+                    .map_err(|e| format!("Browser still unreachable after relaunch: {e}"))?
             }
         };
 
-        let new_conn = cdp::connect_to_target(&ws_url)
+        // Step 2: open a browser-level connection and list all page targets
+        // with their browserContextId (profile).
+        let browser_conn = cdp::connect(&browser_ws)
+            .await
+            .map_err(|e| format!("Browser endpoint connect failed: {e}"))?;
+        let targets_result = cdp::send(&browser_conn, "Target.getTargets", serde_json::json!({}))
+            .await
+            .map_err(|e| format!("Target.getTargets failed: {e}"))?;
+        let page_targets: Vec<(String, Option<String>)> = targets_result
+            .get("targetInfos")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|t| t.get("type").and_then(|x| x.as_str()) == Some("page"))
+                    .filter_map(|t| {
+                        let id = t.get("targetId").and_then(|x| x.as_str())?.to_owned();
+                        let ctx = t.get("browserContextId").and_then(|x| x.as_str()).map(|s| s.to_owned());
+                        Some((id, ctx))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Step 3: pick a target, never leaving our locked profile.
+        let in_locked = |ctx: &Option<String>| -> bool {
+            match (&locked_ctx, ctx) {
+                (Some(want), Some(have)) => want == have,
+                (None, _) => true,        // no lock yet — anything goes
+                (Some(_), None) => false, // we have a lock, target has no context — skip
+            }
+        };
+
+        let mut created_new = false;
+        let chosen_id: String = if let Some((id, _)) = sticky
+            .as_ref()
+            .and_then(|s| page_targets.iter().find(|(id, ctx)| id == s && in_locked(ctx)))
+        {
+            id.clone()
+        } else if let Some((id, _)) = page_targets.iter().find(|(_, ctx)| in_locked(ctx)) {
+            tracing::info!("Sticky tab gone — reconnecting to another tab in our profile");
+            id.clone()
+        } else {
+            // No tab in our profile — create one rather than hijacking another profile.
+            tracing::info!("No tab in our profile — opening a fresh one");
+            let mut params = serde_json::json!({ "url": "about:blank" });
+            if let Some(ctx) = &locked_ctx {
+                params["browserContextId"] = serde_json::json!(ctx);
+            }
+            let res = cdp::send(&browser_conn, "Target.createTarget", params)
+                .await
+                .map_err(|e| format!("Failed to create tab in our profile: {e}"))?;
+            created_new = true;
+            res.get("targetId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned())
+                .ok_or_else(|| "Target.createTarget returned no targetId".to_owned())?
+        };
+
+        // Step 4: connect to the chosen page target.
+        if created_new {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let page_ws = crate::browser::find_target_ws_url(self.port, Some(&chosen_id))
+            .await
+            .map_err(|e| format!("Could not find WS URL for target {chosen_id}: {e}"))?;
+        let new_conn = cdp::connect_to_target(&page_ws)
             .await
             .map_err(|e| format!("Reconnect failed: {e}"))?;
         self.live.swap(new_conn).await;
         self.resubscribe_events().await;
-        tracing::info!("CDP reconnected to {ws_url}");
+
+        // Step 5: update sticky target + capture the profile lock if not set yet.
+        *self.sticky_target.lock().await = Some(chosen_id.clone());
+        {
+            let mut ctx_guard = self.sticky_browser_context_id.lock().await;
+            if ctx_guard.is_none() {
+                if let Some((_, Some(ctx))) = page_targets.iter().find(|(id, _)| id == &chosen_id) {
+                    tracing::info!("Locked Causeway to browserContextId (profile): {ctx}");
+                    *ctx_guard = Some(ctx.clone());
+                }
+            }
+        }
+
+        tracing::info!("CDP reconnected to page {chosen_id}");
         Ok(())
     }
 

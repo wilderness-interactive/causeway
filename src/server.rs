@@ -461,6 +461,17 @@ fn parse_chord(chord: &str) -> (u32, String) {
     (modifiers, key)
 }
 
+/// An HTTP client for the DevTools /json endpoint, bounded by a timeout. A browser
+/// mid-restore accepts the TCP connection but can be slow to answer — without a
+/// timeout the request hangs forever (reqwest has no default). With one, a wedged
+/// endpoint surfaces as an Err that the caller flows into reconnect.
+fn devtools_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 // -- Device emulation presets --
 
 /// Returns (width, height, device_scale_factor, mobile, user_agent) for known device presets.
@@ -2084,8 +2095,8 @@ impl CausewayServer {
         &self,
         Parameters(ExtensionEvalParams { action, query, expression }): Parameters<ExtensionEvalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let url = format!("http://localhost:{}/json", self.port);
-        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/json", self.port);
+        let client = devtools_client();
 
         let response = match client.get(&url).send().await {
             Ok(r) => r,
@@ -2573,8 +2584,8 @@ impl CausewayServer {
 
     #[tool(description = "List all open browser tabs with their titles, URLs, and target IDs.")]
     async fn list_tabs(&self) -> Result<CallToolResult, McpError> {
-        let url = format!("http://localhost:{}/json", self.port);
-        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/json", self.port);
+        let client = devtools_client();
 
         let response = match client.get(&url).send().await {
             Ok(r) => r,

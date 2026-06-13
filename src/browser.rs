@@ -76,7 +76,8 @@ fn extract_exe_name(executable: &str) -> String {
         .to_owned()
 }
 
-/// Check if a process with this name is currently running (Windows)
+/// Check if a process with this name is currently running (Windows: tasklist).
+#[cfg(target_os = "windows")]
 fn is_process_running(exe_name: &str) -> bool {
     let output = Command::new("tasklist")
         .args(["/FI", &format!("IMAGENAME eq {exe_name}"), "/NH"])
@@ -87,6 +88,17 @@ fn is_process_running(exe_name: &str) -> bool {
             let stdout = String::from_utf8_lossy(&out.stdout);
             stdout.contains(exe_name)
         }
+        Err(_) => false,
+    }
+}
+
+/// Check if a process with this name is currently running (Unix: pgrep).
+/// `pgrep -f` matches against the full command line, so the executable basename
+/// (e.g. "Microsoft Edge") matches the browser and its helper processes.
+#[cfg(not(target_os = "windows"))]
+fn is_process_running(exe_name: &str) -> bool {
+    match Command::new("pgrep").args(["-f", exe_name]).output() {
+        Ok(out) => out.status.success() && !out.stdout.is_empty(),
         Err(_) => false,
     }
 }
@@ -105,14 +117,8 @@ async fn kill_and_wait(exe_name: &str) -> Result<(), BrowserError> {
         // Kill on first tick and every 3 seconds thereafter
         if tick % 12 == 0 {
             let attempt = tick / 12 + 1;
-            tracing::info!("taskkill attempt {attempt} for {exe_name}");
-            match Command::new("taskkill").args(["/F", "/IM", exe_name]).output() {
-                Ok(o) if !o.status.success() => {
-                    tracing::warn!("taskkill: {}", String::from_utf8_lossy(&o.stderr).trim());
-                }
-                Err(e) => tracing::warn!("taskkill error: {e}"),
-                Ok(_) => {}
-            }
+            tracing::info!("kill attempt {attempt} for {exe_name}");
+            kill_browser_processes(exe_name);
         }
 
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -121,6 +127,33 @@ async fn kill_and_wait(exe_name: &str) -> Result<(), BrowserError> {
     Err(BrowserError::LaunchFailed(
         format!("Could not kill {exe_name} after 30s — is another program holding it?")
     ))
+}
+
+/// Force-kill all processes matching this browser executable name (Windows: taskkill).
+#[cfg(target_os = "windows")]
+fn kill_browser_processes(exe_name: &str) {
+    match Command::new("taskkill").args(["/F", "/IM", exe_name]).output() {
+        Ok(o) if !o.status.success() => {
+            tracing::warn!("taskkill: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Err(e) => tracing::warn!("taskkill error: {e}"),
+        Ok(_) => {}
+    }
+}
+
+/// Force-kill all processes matching this browser executable name (Unix: pkill).
+/// `pkill -f` matches the name anywhere in the command line, catching Chromium's
+/// helper processes (GPU, renderer, crashpad) too. Exit code 1 just means
+/// "nothing matched" — not an error worth logging.
+#[cfg(not(target_os = "windows"))]
+fn kill_browser_processes(exe_name: &str) {
+    match Command::new("pkill").args(["-9", "-f", exe_name]).output() {
+        Ok(o) if !o.status.success() && o.status.code() != Some(1) => {
+            tracing::warn!("pkill: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Err(e) => tracing::warn!("pkill error: {e}"),
+        Ok(_) => {}
+    }
 }
 
 /// Find the WebSocket URL for a specific target ID, or the first page target if None.

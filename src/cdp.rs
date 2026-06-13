@@ -85,9 +85,14 @@ impl std::error::Error for CdpError {}
 pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
     use futures_util::{SinkExt, StreamExt};
 
+    // Edge echoes back ws://localhost:... in webSocketDebuggerUrl. On Windows localhost
+    // resolves to ::1 first, where the DevTools server isn't bound — the connect hangs
+    // to timeout instead of refusing fast. Pin to the IPv4 literal it actually listens on.
+    let ws_url = ws_url.replace("://localhost:", "://127.0.0.1:");
+
     let (ws_stream, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio_tungstenite::connect_async(ws_url),
+        tokio_tungstenite::connect_async(&ws_url),
     )
     .await
     .map_err(|_| CdpError::ConnectionFailed("WebSocket connect timed out".to_owned()))?

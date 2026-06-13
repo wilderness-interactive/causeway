@@ -125,7 +125,10 @@ async fn kill_and_wait(exe_name: &str) -> Result<(), BrowserError> {
 
 /// Find the WebSocket URL for a specific target ID, or the first page target if None.
 pub async fn find_target_ws_url(port: u16, target_id: Option<&str>) -> Result<String, BrowserError> {
-    let url = format!("http://localhost:{port}/json");
+    // 127.0.0.1, not localhost: on Windows localhost resolves to ::1 first, but Edge's
+    // DevTools server binds IPv4 only. The IPv6 route doesn't refuse fast — it hangs to
+    // timeout, which makes a live port look dead. The literal address skips DNS and ::1.
+    let url = format!("http://127.0.0.1:{port}/json");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -167,7 +170,7 @@ async fn try_connect_existing(port: u16) -> Result<String, ()> {
 /// Get the browser-level CDP WebSocket URL (for issuing Target.* commands).
 /// This endpoint exists as long as the browser is alive, independent of any tab.
 pub async fn browser_ws_url(port: u16) -> Result<String, BrowserError> {
-    let url = format!("http://localhost:{port}/json/version");
+    let url = format!("http://127.0.0.1:{port}/json/version");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -192,7 +195,7 @@ pub async fn browser_ws_url(port: u16) -> Result<String, BrowserError> {
 /// Returns the WS URL of the first stable page target.
 /// Handles both slow browser launches and session restore target churn.
 async fn poll_until_stable(port: u16) -> Result<String, BrowserError> {
-    let url = format!("http://localhost:{port}/json");
+    let url = format!("http://127.0.0.1:{port}/json");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()

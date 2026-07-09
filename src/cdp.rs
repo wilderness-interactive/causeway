@@ -14,6 +14,8 @@ struct CdpCommand {
     id: u64,
     method: String,
     params: Value,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,6 +25,8 @@ struct CdpMessage {
     result: Option<Value>,
     error: Option<CdpErrorData>,
     params: Option<Value>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -36,15 +40,28 @@ pub struct CdpErrorData {
 pub struct CdpEvent {
     pub method: String,
     pub params: Value,
+    /// The flat-session target this event came from. None for browser-level
+    /// events (e.g. Target.targetDestroyed) that aren't scoped to a tab.
+    #[allow(dead_code)] // available for future per-tab event filtering
+    pub session_id: Option<String>,
 }
 
 // --- Connection data ---
 
+/// A single WebSocket connection to the browser-level CDP endpoint. Tabs are
+/// never separate connections — each is a flat session attached on top of
+/// this one socket (see `attach_session`), so many tabs can be acted on
+/// concurrently with no shared "current tab" to fight over.
 pub struct CdpConnection {
     cmd_sender: mpsc::UnboundedSender<CdpCommand>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpErrorData>>>>>,
     event_sender: broadcast::Sender<CdpEvent>,
     next_id: AtomicU64,
+    /// Flat CDP sessions attached on this connection, keyed by target_id.
+    /// Populated lazily by `attach_session` and reused on every subsequent
+    /// call for that target — attaching is a caller claiming its own tab,
+    /// never a swap of what any other caller is looking at.
+    sessions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl std::fmt::Debug for CdpConnection {
@@ -82,6 +99,9 @@ impl std::error::Error for CdpError {}
 
 // --- Free functions operating on connection data ---
 
+/// Connect to a CDP WebSocket endpoint (the browser-level endpoint — see
+/// `browser::browser_ws_url`). One connection serves the whole browser;
+/// individual tabs are reached by attaching flat sessions on top of it.
 pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
     use futures_util::{SinkExt, StreamExt};
 
@@ -145,6 +165,7 @@ pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
                 let _ = event_sender_clone.send(CdpEvent {
                     method,
                     params: parsed.params.unwrap_or(Value::Null),
+                    session_id: parsed.session_id,
                 });
             }
         }
@@ -171,11 +192,19 @@ pub async fn connect(ws_url: &str) -> Result<CdpConnection, CdpError> {
         pending,
         event_sender,
         next_id: AtomicU64::new(1),
+        sessions: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 
-/// Send a CDP command and wait for its response.
-pub async fn send(conn: &CdpConnection, method: &str, params: Value) -> Result<Value, CdpError> {
+/// Send a CDP command and wait for its response. `session_id` scopes the
+/// command to a specific tab's flat session (see `attach_session`) — `None`
+/// means a browser-level command (Target.*, etc).
+pub async fn send(
+    conn: &CdpConnection,
+    session_id: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value, CdpError> {
     let id = conn.next_id.fetch_add(1, Ordering::Relaxed);
     let (response_tx, response_rx) = oneshot::channel();
 
@@ -187,6 +216,7 @@ pub async fn send(conn: &CdpConnection, method: &str, params: Value) -> Result<V
         id,
         method: method.to_owned(),
         params,
+        session_id: session_id.map(|s| s.to_owned()),
     };
     conn.cmd_sender
         .send(cmd)
@@ -212,28 +242,80 @@ pub fn subscribe_events(conn: &CdpConnection) -> broadcast::Receiver<CdpEvent> {
     conn.event_sender.subscribe()
 }
 
-/// Send a command built by a commands.rs function.
-pub async fn execute(conn: &CdpConnection, command: (&str, Value)) -> Result<Value, CdpError> {
+/// Send a command built by a commands.rs function, scoped to `session_id`.
+pub async fn execute(
+    conn: &CdpConnection,
+    session_id: Option<&str>,
+    command: (&str, Value),
+) -> Result<Value, CdpError> {
     let (method, params) = command;
-    send(conn, method, params).await
+    send(conn, session_id, method, params).await
 }
 
-/// Send a sequence of commands (e.g., click = mousePressed + mouseReleased).
+/// Send a sequence of commands (e.g., click = mousePressed + mouseReleased),
+/// all scoped to the same `session_id`.
 pub async fn execute_sequence(
     conn: &CdpConnection,
+    session_id: Option<&str>,
     commands: Vec<(&str, Value)>,
 ) -> Result<Value, CdpError> {
     let mut last_result = Value::Null;
     for (method, params) in commands {
-        last_result = send(conn, method, params).await?;
+        last_result = send(conn, session_id, method, params).await?;
     }
     Ok(last_result)
 }
 
-// --- Swappable connection for tab switching and reconnect ---
+/// Attach a flat CDP session to a target, returning its sessionId. Idempotent —
+/// repeated calls for the same target_id reuse the cached session instead of
+/// re-attaching. This is how a caller claims a specific tab: no other caller's
+/// session is touched, and no global "current tab" pointer is repointed. Many
+/// targets can be attached concurrently on this one connection.
+pub async fn attach_session(conn: &CdpConnection, target_id: &str) -> Result<String, CdpError> {
+    let mut sessions = conn.sessions.lock().await;
+    if let Some(existing) = sessions.get(target_id) {
+        return Ok(existing.clone());
+    }
 
-/// Holds the active CDP connection. All tools read through this.
-/// When a tab switch or reconnect happens, the inner Arc gets replaced.
+    let result = send(
+        conn,
+        None,
+        "Target.attachToTarget",
+        serde_json::json!({ "targetId": target_id, "flatten": true }),
+    )
+    .await?;
+
+    let session_id = result
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            CdpError::ConnectionFailed("Target.attachToTarget returned no sessionId".to_owned())
+        })?
+        .to_owned();
+
+    // Enable the domains every tool needs, scoped to this session only.
+    execute(conn, Some(&session_id), crate::commands::enable_page()).await?;
+    execute(conn, Some(&session_id), crate::commands::enable_dom()).await?;
+    execute(conn, Some(&session_id), crate::commands::enable_runtime()).await?;
+    execute(conn, Some(&session_id), crate::commands::enable_network()).await?;
+    // Stealth: inject script before any page JS to hide CDP signals
+    execute(conn, Some(&session_id), crate::commands::add_stealth_script()).await?;
+
+    sessions.insert(target_id.to_owned(), session_id.clone());
+    Ok(session_id)
+}
+
+/// Drop a cached session (e.g. after closing its tab) so a stale sessionId
+/// never gets reused for a target that no longer exists.
+pub async fn detach_session(conn: &CdpConnection, target_id: &str) {
+    conn.sessions.lock().await.remove(target_id);
+}
+
+// --- Swappable connection for reconnect ---
+
+/// Holds the active browser-level CDP connection. All tools read through this.
+/// Only replaced when the browser itself dies and is relaunched — tab-to-tab
+/// targeting never touches this, it just attaches another session on top.
 pub struct LiveConnection {
     inner: RwLock<Option<Arc<CdpConnection>>>,
 }
@@ -257,7 +339,7 @@ impl LiveConnection {
         self.inner.read().await.clone()
     }
 
-    /// Swap to a new connection (tab switch or reconnect).
+    /// Swap to a new connection (browser relaunch/reconnect only).
     /// Drains all pending responses on the old connection so in-flight
     /// callers get an immediate error instead of waiting for the 30s timeout.
     pub async fn swap(&self, new_conn: CdpConnection) {
@@ -277,16 +359,4 @@ impl LiveConnection {
         }
         *guard = Some(Arc::new(new_conn));
     }
-}
-
-/// Connect to a target and enable required CDP domains.
-pub async fn connect_to_target(ws_url: &str) -> Result<CdpConnection, CdpError> {
-    let conn = connect(ws_url).await?;
-    execute(&conn, crate::commands::enable_page()).await?;
-    execute(&conn, crate::commands::enable_dom()).await?;
-    execute(&conn, crate::commands::enable_runtime()).await?;
-    execute(&conn, crate::commands::enable_network()).await?;
-    // Stealth: inject script before any page JS to hide CDP signals
-    execute(&conn, crate::commands::add_stealth_script()).await?;
-    Ok(conn)
 }

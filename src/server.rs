@@ -17,18 +17,24 @@ use crate::config::BrowserConfig;
 pub struct NavigateParams {
     #[schemars(description = "The URL to navigate to")]
     pub url: String,
+    #[schemars(description = "Navigate this specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever navigates its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EvaluateJsParams {
     #[schemars(description = "JavaScript expression to evaluate in the page context")]
     pub expression: String,
+    #[schemars(description = "Run this in a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClickParams {
     #[schemars(description = "CSS selector of the element to click")]
     pub selector: String,
+    #[schemars(description = "Click within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -39,6 +45,8 @@ pub struct TypeTextParams {
     pub text: String,
     #[schemars(description = "Clear the field before typing (select all + delete). Default: false")]
     pub clear: Option<bool>,
+    #[schemars(description = "Type within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -47,6 +55,8 @@ pub struct WaitForParams {
     pub selector: String,
     #[schemars(description = "Maximum time to wait in milliseconds (default: 5000)")]
     pub timeout_ms: Option<u64>,
+    #[schemars(description = "Wait within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -55,6 +65,8 @@ pub struct ScrollParams {
     pub x: Option<f64>,
     #[schemars(description = "Pixels to scroll vertically (positive = down)")]
     pub y: Option<f64>,
+    #[schemars(description = "Scroll within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -63,6 +75,8 @@ pub struct SelectOptionParams {
     pub selector: String,
     #[schemars(description = "The value attribute of the option to select")]
     pub value: String,
+    #[schemars(description = "Select within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -89,6 +103,8 @@ pub struct InspectParams {
     pub selector: Option<String>,
     #[schemars(description = "Maximum depth to traverse (default: 4)")]
     pub max_depth: Option<u32>,
+    #[schemars(description = "Inspect within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -97,12 +113,16 @@ pub struct PointInspectParams {
     pub x: f64,
     #[schemars(description = "Y coordinate (pixels from top)")]
     pub y: f64,
+    #[schemars(description = "Inspect within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QueryElementsParams {
     #[schemars(description = "CSS selector to find matching elements")]
     pub selector: String,
+    #[schemars(description = "Query within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -111,6 +131,8 @@ pub struct ClickTextParams {
     pub text: String,
     #[schemars(description = "HTML tag to limit search to (e.g. \"button\", \"a\"). Default: \"*\" (all elements)")]
     pub tag: Option<String>,
+    #[schemars(description = "Click within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -119,18 +141,24 @@ pub struct ClickLinkParams {
     pub text: String,
     #[schemars(description = "Which match to click if multiple elements share the same text (0-based). Default: 0 (first match)")]
     pub index: Option<usize>,
+    #[schemars(description = "Click within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct HoverParams {
     #[schemars(description = "CSS selector of the element to hover over")]
     pub selector: String,
+    #[schemars(description = "Hover within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PressKeyParams {
     #[schemars(description = "Key to press (e.g. \"Enter\", \"Tab\", \"Escape\", \"ArrowDown\", \"Backspace\", \"Space\")")]
     pub key: String,
+    #[schemars(description = "Press within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -139,12 +167,16 @@ pub struct GetAttributeParams {
     pub selector: String,
     #[schemars(description = "Attribute name to read (e.g. \"href\", \"src\", \"data-id\", \"value\")")]
     pub attribute: String,
+    #[schemars(description = "Read within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadTextParams {
     #[schemars(description = "CSS selector to read text from")]
     pub selector: String,
+    #[schemars(description = "Read within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -153,18 +185,24 @@ pub struct FillFormParams {
     pub selector: String,
     #[schemars(description = "JSON object mapping field names/selectors to values, e.g. {\"#email\": \"test@example.com\", \"#name\": \"John\"}")]
     pub fields: std::collections::HashMap<String, String>,
+    #[schemars(description = "Fill within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct WaitForNavigationParams {
     #[schemars(description = "Maximum time to wait in milliseconds (default: 10000)")]
     pub timeout_ms: Option<u64>,
+    #[schemars(description = "Wait within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetCookiesParams {
     #[schemars(description = "Optional URL filter — only return cookies for this domain. If omitted, returns cookies for the current page.")]
     pub url: Option<String>,
+    #[schemars(description = "Read within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -175,6 +213,8 @@ pub struct WaitForTextParams {
     pub selector: Option<String>,
     #[schemars(description = "Maximum time to wait in milliseconds (default: 5000)")]
     pub timeout_ms: Option<u64>,
+    #[schemars(description = "Wait within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -189,6 +229,8 @@ pub struct SetCookieParams {
     pub domain: Option<String>,
     #[schemars(description = "Cookie path (default: \"/\")")]
     pub path: Option<String>,
+    #[schemars(description = "Set within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -197,6 +239,8 @@ pub struct UploadFileParams {
     pub selector: String,
     #[schemars(description = "Absolute path to the file to upload")]
     pub file_path: String,
+    #[schemars(description = "Upload within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -205,18 +249,24 @@ pub struct HandleDialogParams {
     pub accept: bool,
     #[schemars(description = "Text to enter for prompt dialogs")]
     pub prompt_text: Option<String>,
+    #[schemars(description = "Handle the dialog within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct KeyboardChordParams {
     #[schemars(description = "Key chord to press, e.g. \"Ctrl+A\", \"Ctrl+Shift+T\", \"Alt+F4\". Modifier names: Ctrl, Alt, Shift, Meta.")]
     pub chord: String,
+    #[schemars(description = "Press within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DoubleClickParams {
     #[schemars(description = "CSS selector of the element to double-click")]
     pub selector: String,
+    #[schemars(description = "Double-click within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -235,6 +285,8 @@ pub struct DragParams {
     pub to_y: Option<f64>,
     #[schemars(description = "Number of intermediate steps for smooth drag (default: 10)")]
     pub steps: Option<u32>,
+    #[schemars(description = "Drag within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -243,6 +295,8 @@ pub struct SetViewportParams {
     pub width: u32,
     #[schemars(description = "Viewport height in pixels")]
     pub height: u32,
+    #[schemars(description = "Set within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -267,24 +321,32 @@ pub struct DownloadFileParams {
     pub url: String,
     #[schemars(description = "Absolute local path to save the file to")]
     pub save_path: String,
+    #[schemars(description = "Forward cookies from a specific tab (target_id from list_tabs/new_tab) instead of the default tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ElementScreenshotParams {
     #[schemars(description = "CSS selector of the element to screenshot")]
     pub selector: String,
+    #[schemars(description = "Screenshot within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SavePdfParams {
     #[schemars(description = "Absolute local path to save the PDF file")]
     pub save_path: String,
+    #[schemars(description = "Save within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadFormParams {
     #[schemars(description = "CSS selector for the form or container (default: entire page)")]
     pub selector: Option<String>,
+    #[schemars(description = "Read within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -293,6 +355,8 @@ pub struct ClearStorageParams {
     pub storage_types: Option<String>,
     #[schemars(description = "Also clear browser HTTP cache. Default: true")]
     pub clear_cache: Option<bool>,
+    #[schemars(description = "Clear within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -311,6 +375,8 @@ pub struct ToggleParams {
     pub label: String,
     #[schemars(description = "Force a specific state: true = checked, false = unchecked. Omit to toggle.")]
     pub checked: Option<bool>,
+    #[schemars(description = "Toggle within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -319,6 +385,8 @@ pub struct InspectStylesParams {
     pub selector: String,
     #[schemars(description = "Specific CSS properties to inspect (e.g. [\"font-size\", \"color\", \"padding\"]). Omit for common layout/typography properties.")]
     pub properties: Option<Vec<String>>,
+    #[schemars(description = "Inspect within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -335,6 +403,8 @@ pub struct EmulateDeviceParams {
     pub touch: Option<bool>,
     #[schemars(description = "Device scale factor. Default: from preset or 1")]
     pub device_scale_factor: Option<f64>,
+    #[schemars(description = "Emulate within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -343,6 +413,50 @@ pub struct ChainParams {
     pub steps: Vec<serde_json::Value>,
     #[schemars(description = "Base delay between steps in milliseconds. Each step sleeps for this duration ±100ms (randomized). Default: 1000")]
     pub delay_ms: Option<u64>,
+    #[schemars(description = "Run this chain within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ScreenshotParams {
+    #[schemars(description = "Screenshot a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadPageParams {
+    #[schemars(description = "Read a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetUrlParams {
+    #[schemars(description = "Read a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NavHistoryParams {
+    #[schemars(description = "Navigate history within a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AccessibilitySnapshotParams {
+    #[schemars(description = "Snapshot a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetPageMetricsParams {
+    #[schemars(description = "Read metrics from a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DiscoverWebmcpToolsParams {
+    #[schemars(description = "Check a specific tab (target_id from list_tabs/new_tab) instead of the default tab. Pass this for concurrent multi-agent use so each agent only ever touches its own tab.")]
+    pub target_id: Option<String>,
 }
 
 // -- Shared JS helpers --
@@ -586,7 +700,9 @@ pub struct CausewayServer {
     network_log: Arc<tokio::sync::Mutex<Vec<NetworkEntry>>>,
     pending_dialog: Arc<tokio::sync::Mutex<Option<PendingDialog>>>,
     /// URL + title snapshot taken before click/submit actions, for navigation detection.
-    pre_nav_snapshot: Arc<tokio::sync::Mutex<(String, String)>>,
+    /// Keyed by target_id so concurrent agents acting on different tabs never
+    /// read back a sibling's snapshot.
+    pre_nav_snapshot: Arc<tokio::sync::Mutex<std::collections::HashMap<String, (String, String)>>>,
     /// Guard so only one try_reconnect runs at a time — concurrent failures share the result.
     reconnect_guard: Arc<tokio::sync::Mutex<()>>,
     /// First navigate opens a new tab so concurrent sessions don't fight over tabs.
@@ -609,7 +725,7 @@ impl CausewayServer {
             console_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             network_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_dialog: Arc::new(tokio::sync::Mutex::new(None)),
-            pre_nav_snapshot: Arc::new(tokio::sync::Mutex::new((String::new(), String::new()))),
+            pre_nav_snapshot: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             first_navigate: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             sticky_browser_context_id: Arc::new(tokio::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
@@ -619,7 +735,7 @@ impl CausewayServer {
     /// Look up the browserContextId of a given target. Returns None if not found.
     async fn target_browser_context_id(&self, target_id: &str) -> Option<String> {
         let conn = self.live.get().await?;
-        let result = cdp::send(&*conn, "Target.getTargets", serde_json::json!({})).await.ok()?;
+        let result = cdp::send(&conn, None, "Target.getTargets", serde_json::json!({})).await.ok()?;
         let targets = result.get("targetInfos")?.as_array()?;
         for t in targets {
             if t.get("targetId").and_then(|v| v.as_str()) == Some(target_id) {
@@ -647,10 +763,19 @@ impl CausewayServer {
     #[tool(description = "Navigate the browser to a URL. Returns the page title after loading.")]
     async fn navigate(
         &self,
-        Parameters(NavigateParams { url }): Parameters<NavigateParams>,
+        Parameters(NavigateParams { url, target_id }): Parameters<NavigateParams>,
     ) -> Result<CallToolResult, McpError> {
-        // First navigate of this session: open a new tab so we don't hijack another session's tab.
-        if self.first_navigate.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // An explicit target_id names the caller's own tab directly — never touch
+        // the shared sticky default, so concurrent agents can't steal each other's tab.
+        let effective_target: Option<String> = if let Some(tid) = target_id {
+            self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.execute_reconnect(Some(tid.as_str()), commands::navigate(&url))
+                .await
+                .map_err(|e| McpError::internal_error(format!("Navigate failed: {e}"), None))?;
+            Some(tid)
+        } else if self.first_navigate.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            // First navigate of this session: open a new tab so we don't hijack another session's tab.
+            let mut opened: Option<String> = None;
             // Ensure browser is running (lazy init triggers reconnect if needed)
             if self.live.get().await.is_none() {
                 self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
@@ -663,28 +788,32 @@ impl CausewayServer {
                 if let Some(ctx) = &sticky_ctx {
                     params["browserContextId"] = serde_json::json!(ctx);
                 }
-                let result = cdp::send(&*conn, "Target.createTarget", params).await;
+                let result = cdp::send(&conn, None, "Target.createTarget", params).await;
                 if let Ok(res) = result {
-                    if let Some(target_id) = res.get("targetId").and_then(|v| v.as_str()) {
-                        let tid = target_id.to_owned();
+                    if let Some(new_target_id) = res.get("targetId").and_then(|v| v.as_str()) {
+                        let tid = new_target_id.to_owned();
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        if self.reconnect_to_target(&tid).await.is_ok() {
+                        if self.attach_to_target(&tid).await.is_ok() {
                             *self.sticky_target.lock().await = Some(tid.clone());
+                            opened = Some(tid);
                             // Fall through to the wait-for-load + title logic below
                         }
                     }
                 }
                 // If new tab failed for any reason, fall through to normal navigate
             }
+            opened
         } else {
-            // Normal navigate: same tab
-            self.execute_reconnect(commands::navigate(&url))
+            // Normal navigate: default/sticky tab
+            self.execute_reconnect(None, commands::navigate(&url))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Navigate failed: {e}"), None))?;
-        }
+            None
+        };
+        let target = effective_target.as_deref();
 
         // Wait for the page to fully load (readyState = 'complete'). 8s cap.
-        let _ = self.execute_reconnect(commands::evaluate(
+        let _ = self.execute_reconnect(target, commands::evaluate(
             "new Promise(resolve => {
                 if (document.readyState === 'complete') { resolve(); return; }
                 window.addEventListener('load', () => resolve(), { once: true });
@@ -693,7 +822,7 @@ impl CausewayServer {
         ))
         .await;
 
-        let title_result = self.execute_reconnect(commands::evaluate("document.title"))
+        let title_result = self.execute_reconnect(target, commands::evaluate("document.title"))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to get title: {e}"), None))?;
 
@@ -703,7 +832,7 @@ impl CausewayServer {
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
 
-        let url_result = self.execute_reconnect(commands::evaluate("window.location.href"))
+        let url_result = self.execute_reconnect(target, commands::evaluate("window.location.href"))
             .await
             .ok();
 
@@ -720,14 +849,18 @@ impl CausewayServer {
     }
 
     #[tool(description = "Take a screenshot of the current page. Returns the image as base64 WebP (smaller than PNG).")]
-    async fn screenshot(&self) -> Result<CallToolResult, McpError> {
+    async fn screenshot(
+        &self,
+        Parameters(ScreenshotParams { target_id }): Parameters<ScreenshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_id = target_id.as_deref();
         // Cascade down quality until under 5MB base64 (~3.75MB decoded)
         const MAX_BASE64: usize = 5_000_000;
         const MAX_DIM: f64 = 2000.0;
         let qualities: &[u8] = &[80, 50, 30, 15];
 
         // Get viewport dimensions + devicePixelRatio (actual image pixels = logical × DPR)
-        let dims_result = self.execute_reconnect(commands::evaluate(
+        let dims_result = self.execute_reconnect(target_id, commands::evaluate(
             "JSON.stringify({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })"
         )).await.ok();
         let (vw, vh, dpr) = dims_result
@@ -758,7 +891,7 @@ impl CausewayServer {
                 serde_json::json!({ "format": "webp", "quality": q })
             };
 
-            let result = self.exec_with_reconnect("Page.captureScreenshot", params)
+            let result = self.exec_with_reconnect(target_id, "Page.captureScreenshot", params)
                 .await
                 .map_err(|e| McpError::internal_error(format!("Screenshot failed: {e}"), None))?;
 
@@ -796,8 +929,11 @@ impl CausewayServer {
     }
 
     #[tool(description = "Read the text content of the current page. Returns the visible text.")]
-    async fn read_page(&self) -> Result<CallToolResult, McpError> {
-        let result = self.execute_reconnect(commands::evaluate("document.body.innerText"))
+    async fn read_page(
+        &self,
+        Parameters(ReadPageParams { target_id }): Parameters<ReadPageParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.body.innerText"))
             .await
             .map_err(|e| McpError::internal_error(format!("Read page failed: {e}"), None))?;
 
@@ -820,7 +956,7 @@ impl CausewayServer {
     #[tool(description = "Read text content from a specific element by CSS selector. More focused than read_page — avoids overwhelming output on complex pages.")]
     async fn read_text(
         &self,
-        Parameters(ReadTextParams { selector }): Parameters<ReadTextParams>,
+        Parameters(ReadTextParams { selector, target_id }): Parameters<ReadTextParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -831,7 +967,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Read text failed: {e}"), None))?;
 
@@ -859,14 +995,14 @@ impl CausewayServer {
     #[tool(description = "Get browser cookies, optionally filtered by URL. Uses CDP Network.getCookies for full cookie details including httpOnly and secure cookies not visible to JavaScript.")]
     async fn get_cookies(
         &self,
-        Parameters(GetCookiesParams { url }): Parameters<GetCookiesParams>,
+        Parameters(GetCookiesParams { url, target_id }): Parameters<GetCookiesParams>,
     ) -> Result<CallToolResult, McpError> {
         let params = match &url {
             Some(u) => serde_json::json!({ "urls": [u] }),
             None => serde_json::json!({}),
         };
 
-        let result = self.exec_with_reconnect("Network.getCookies", params)
+        let result = self.exec_with_reconnect(target_id.as_deref(), "Network.getCookies", params)
             .await
             .map_err(|e| McpError::internal_error(format!("Get cookies failed: {e}"), None))?;
 
@@ -907,9 +1043,9 @@ impl CausewayServer {
     #[tool(description = "Set a browser cookie. Use url to infer domain/path, or provide domain/path explicitly.")]
     async fn set_cookie(
         &self,
-        Parameters(SetCookieParams { name, value, url, domain, path }): Parameters<SetCookieParams>,
+        Parameters(SetCookieParams { name, value, url, domain, path, target_id }): Parameters<SetCookieParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = self.execute_reconnect(commands::set_cookie(
+        let result = self.execute_reconnect(target_id.as_deref(), commands::set_cookie(
             &name,
             &value,
             url.as_deref(),
@@ -933,7 +1069,7 @@ impl CausewayServer {
     #[tool(description = "Wait until specific text appears on the page. Polls the container element every 200ms. Case-insensitive substring match.")]
     async fn wait_for_text(
         &self,
-        Parameters(WaitForTextParams { text, selector, timeout_ms }): Parameters<WaitForTextParams>,
+        Parameters(WaitForTextParams { text, selector, timeout_ms, target_id }): Parameters<WaitForTextParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = timeout_ms.unwrap_or(5000);
         let interval = 200u64;
@@ -951,7 +1087,7 @@ impl CausewayServer {
                 needle = serde_json::to_string(&needle).unwrap(),
             );
 
-            let result = self.execute_reconnect(commands::evaluate(&js))
+            let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Text check failed: {e}"), None))?;
 
@@ -979,7 +1115,7 @@ impl CausewayServer {
     #[tool(description = "Set files on a <input type=\"file\"> element via CDP — bypasses the OS file picker entirely, no dialog opens. Provide the absolute path to the file.")]
     async fn upload_file(
         &self,
-        Parameters(UploadFileParams { selector, file_path }): Parameters<UploadFileParams>,
+        Parameters(UploadFileParams { selector, file_path, target_id }): Parameters<UploadFileParams>,
     ) -> Result<CallToolResult, McpError> {
         // Verify the file exists before attempting to set it.
         let path = std::path::Path::new(&file_path);
@@ -995,7 +1131,7 @@ impl CausewayServer {
             "document.querySelector({sel})",
             sel = serde_json::to_string(&selector).unwrap()
         );
-        let ref_result = self.execute_reconnect(commands::evaluate_ref(&js))
+        let ref_result = self.execute_reconnect(target_id.as_deref(), commands::evaluate_ref(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -1010,7 +1146,7 @@ impl CausewayServer {
             .to_owned();
 
         // Set the file directly via objectId — no OS picker, no dialog, completely silent.
-        self.execute_reconnect(commands::set_file_input_files(&object_id, &[file_path.clone()]))
+        self.execute_reconnect(target_id.as_deref(), commands::set_file_input_files(&object_id, &[file_path.clone()]))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to set file: {e}"), None))?;
 
@@ -1026,9 +1162,9 @@ impl CausewayServer {
     #[tool(description = "Execute JavaScript in the page context and return the result.")]
     async fn evaluate_js(
         &self,
-        Parameters(EvaluateJsParams { expression }): Parameters<EvaluateJsParams>,
+        Parameters(EvaluateJsParams { expression, target_id }): Parameters<EvaluateJsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = self.execute_reconnect(commands::evaluate(&expression))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&expression))
             .await
             .map_err(|e| McpError::internal_error(format!("JS evaluation failed: {e}"), None))?;
 
@@ -1042,7 +1178,7 @@ impl CausewayServer {
 
             if msg.contains("global scope") || msg.contains("Cannot read properties of undefined") {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                let retry = self.execute_reconnect(commands::evaluate(&expression))
+                let retry = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&expression))
                     .await
                     .map_err(|e| McpError::internal_error(format!("JS evaluation failed: {e}"), None))?;
                 if retry.get("exceptionDetails").is_none() {
@@ -1083,11 +1219,11 @@ impl CausewayServer {
     #[tool(description = "Click an element on the page by CSS selector.")]
     async fn click(
         &self,
-        Parameters(ClickParams { selector }): Parameters<ClickParams>,
+        Parameters(ClickParams { selector, target_id }): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = js_find_visible_element(&selector);
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -1108,8 +1244,8 @@ impl CausewayServer {
         let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-        self.snapshot_pre_nav().await;
-        self.execute_seq_reconnect(commands::click(x, y))
+        self.snapshot_pre_nav(target_id.as_deref()).await;
+        self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
 
@@ -1121,7 +1257,7 @@ impl CausewayServer {
     #[tool(description = "Click an element by its visible text content. More reliable than CSS selectors on dynamic UIs. Finds the first visible, in-viewport element whose text, value, or aria-label contains the search string. Works on buttons, links, inputs (including submit buttons by their value), and any element with text.")]
     async fn click_text(
         &self,
-        Parameters(ClickTextParams { text, tag }): Parameters<ClickTextParams>,
+        Parameters(ClickTextParams { text, tag, target_id }): Parameters<ClickTextParams>,
     ) -> Result<CallToolResult, McpError> {
         let tag_filter = tag.as_deref().unwrap_or("*");
 
@@ -1158,7 +1294,7 @@ impl CausewayServer {
             tag = serde_json::to_string(tag_filter).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -1186,8 +1322,8 @@ impl CausewayServer {
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
 
-        self.snapshot_pre_nav().await;
-        self.execute_seq_reconnect(commands::click(x, y))
+        self.snapshot_pre_nav(target_id.as_deref()).await;
+        self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
 
@@ -1199,7 +1335,7 @@ impl CausewayServer {
     #[tool(description = "Click an interactive element (link, button, input) by its visible text. Only matches clickable elements. Use index to disambiguate when multiple elements share the same text.")]
     async fn click_link(
         &self,
-        Parameters(ClickLinkParams { text, index }): Parameters<ClickLinkParams>,
+        Parameters(ClickLinkParams { text, index, target_id }): Parameters<ClickLinkParams>,
     ) -> Result<CallToolResult, McpError> {
         let idx = index.unwrap_or(0);
 
@@ -1235,7 +1371,7 @@ impl CausewayServer {
             idx = idx,
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -1268,8 +1404,8 @@ impl CausewayServer {
             .unwrap_or("(unknown)");
         let total = coords.get("total").and_then(|v| v.as_u64()).unwrap_or(1);
 
-        self.snapshot_pre_nav().await;
-        self.execute_seq_reconnect(commands::click(x, y))
+        self.snapshot_pre_nav(target_id.as_deref()).await;
+        self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y))
             .await
             .map_err(|e| McpError::internal_error(format!("Click failed: {e}"), None))?;
 
@@ -1283,12 +1419,12 @@ impl CausewayServer {
     #[tool(description = "Type text into an element on the page. Focuses the element first, then types character by character.")]
     async fn type_text(
         &self,
-        Parameters(TypeTextParams { selector, text, clear }): Parameters<TypeTextParams>,
+        Parameters(TypeTextParams { selector, text, clear, target_id }): Parameters<TypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
         let should_clear = clear.unwrap_or(false);
         let js = js_focus_visible_element(&selector, should_clear);
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to focus element: {e}"), None))?;
 
@@ -1306,7 +1442,7 @@ impl CausewayServer {
         }
 
         // Type each character (replaces selected text if clear was used)
-        self.execute_seq_reconnect(commands::type_text(&text))
+        self.execute_seq_reconnect(target_id.as_deref(), commands::type_text(&text))
             .await
             .map_err(|e| McpError::internal_error(format!("Type failed: {e}"), None))?;
 
@@ -1320,7 +1456,7 @@ impl CausewayServer {
     #[tool(description = "Read all form fields on the page or within a container. Returns each field's tag, type, name, id, label, value, placeholder, and whether it's required/disabled. Great for understanding a form before filling it.")]
     async fn read_form(
         &self,
-        Parameters(ReadFormParams { selector }): Parameters<ReadFormParams>,
+        Parameters(ReadFormParams { selector, target_id }): Parameters<ReadFormParams>,
     ) -> Result<CallToolResult, McpError> {
         let sel = selector.as_deref().unwrap_or("body");
         let js = format!(
@@ -1363,7 +1499,7 @@ impl CausewayServer {
             sel = serde_json::to_string(sel).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Read form failed: {e}"), None))?;
 
@@ -1386,7 +1522,7 @@ impl CausewayServer {
     #[tool(description = "Fill multiple form fields at once. Takes a JSON object mapping CSS selectors to values. Each field is focused, cleared, and typed into.")]
     async fn fill_form(
         &self,
-        Parameters(FillFormParams { selector, fields }): Parameters<FillFormParams>,
+        Parameters(FillFormParams { selector, fields, target_id }): Parameters<FillFormParams>,
     ) -> Result<CallToolResult, McpError> {
         let fields_json = serde_json::to_string(&fields).unwrap();
         let js = format!(
@@ -1413,7 +1549,7 @@ impl CausewayServer {
             fields = fields_json
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Fill form failed: {e}"), None))?;
 
@@ -1447,7 +1583,7 @@ impl CausewayServer {
                 field = serde_json::to_string(field_sel).unwrap()
             );
 
-            let focus_result = self.execute_reconnect(commands::evaluate(&focus_js))
+            let focus_result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&focus_js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Focus failed: {e}"), None))?;
 
@@ -1458,7 +1594,7 @@ impl CausewayServer {
                 .unwrap_or(false);
 
             if focused {
-                self.execute_seq_reconnect(commands::type_text(field_value))
+                self.execute_seq_reconnect(target_id.as_deref(), commands::type_text(field_value))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Type failed: {e}"), None))?;
                 filled.push(format!("{field_sel}: \"{field_value}\""));
@@ -1480,6 +1616,7 @@ impl CausewayServer {
         Parameters(WaitForParams {
             selector,
             timeout_ms,
+            target_id,
         }): Parameters<WaitForParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = timeout_ms.unwrap_or(5000);
@@ -1492,7 +1629,7 @@ impl CausewayServer {
                 sel = serde_json::to_string(&selector).unwrap()
             );
 
-            let result = self.execute_reconnect(commands::evaluate(&js))
+            let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Wait check failed: {e}"), None))?;
 
@@ -1520,12 +1657,12 @@ impl CausewayServer {
     #[tool(description = "Scroll the page by a given number of pixels.")]
     async fn scroll(
         &self,
-        Parameters(ScrollParams { x, y }): Parameters<ScrollParams>,
+        Parameters(ScrollParams { x, y, target_id }): Parameters<ScrollParams>,
     ) -> Result<CallToolResult, McpError> {
         let scroll_x = x.unwrap_or(0.0);
         let scroll_y = y.unwrap_or(0.0);
 
-        self.execute_reconnect(commands::scroll(scroll_x, scroll_y))
+        self.execute_reconnect(target_id.as_deref(), commands::scroll(scroll_x, scroll_y))
             .await
             .map_err(|e| McpError::internal_error(format!("Scroll failed: {e}"), None))?;
 
@@ -1537,11 +1674,11 @@ impl CausewayServer {
     #[tool(description = "Hover over an element by CSS selector. Useful for revealing dropdown menus, tooltips, or hover states.")]
     async fn hover(
         &self,
-        Parameters(HoverParams { selector }): Parameters<HoverParams>,
+        Parameters(HoverParams { selector, target_id }): Parameters<HoverParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = js_find_visible_element(&selector);
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -1554,7 +1691,7 @@ impl CausewayServer {
                 let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-                self.execute_reconnect(commands::hover(x, y))
+                self.execute_reconnect(target_id.as_deref(), commands::hover(x, y))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Hover failed: {e}"), None))?;
 
@@ -1572,9 +1709,9 @@ impl CausewayServer {
     #[tool(description = "Press a keyboard key (Enter, Tab, Escape, ArrowDown, Backspace, Space, etc.). Useful for form submission, navigation, and closing dialogs.")]
     async fn press_key(
         &self,
-        Parameters(PressKeyParams { key }): Parameters<PressKeyParams>,
+        Parameters(PressKeyParams { key, target_id }): Parameters<PressKeyParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.execute_seq_reconnect(commands::press_key(&key))
+        self.execute_seq_reconnect(target_id.as_deref(), commands::press_key(&key))
             .await
             .map_err(|e| McpError::internal_error(format!("Key press failed: {e}"), None))?;
 
@@ -1586,7 +1723,7 @@ impl CausewayServer {
     #[tool(description = "Read an attribute value from the first matching element. Useful for getting href, src, data-* attributes, or form values.")]
     async fn get_attribute(
         &self,
-        Parameters(GetAttributeParams { selector, attribute }): Parameters<GetAttributeParams>,
+        Parameters(GetAttributeParams { selector, attribute, target_id }): Parameters<GetAttributeParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -1598,7 +1735,7 @@ impl CausewayServer {
             attr = serde_json::to_string(&attribute).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to get attribute: {e}"), None))?;
 
@@ -1621,8 +1758,12 @@ impl CausewayServer {
     }
 
     #[tool(description = "Get the current page URL and title without navigating.")]
-    async fn get_url(&self) -> Result<CallToolResult, McpError> {
+    async fn get_url(
+        &self,
+        Parameters(GetUrlParams { target_id }): Parameters<GetUrlParams>,
+    ) -> Result<CallToolResult, McpError> {
         let result = self.execute_reconnect(
+            target_id.as_deref(),
             commands::evaluate("JSON.stringify({ url: window.location.href, title: document.title })"),
         )
         .await
@@ -1646,12 +1787,17 @@ impl CausewayServer {
     #[tool(description = "Wait for a page navigation to complete (e.g. after clicking a link). Detects both full page loads (via CDP events) and SPA navigations (via History API interception). Returns immediately on detection rather than waiting for timeout.")]
     async fn wait_for_navigation(
         &self,
-        Parameters(WaitForNavigationParams { timeout_ms }): Parameters<WaitForNavigationParams>,
+        Parameters(WaitForNavigationParams { timeout_ms, target_id }): Parameters<WaitForNavigationParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = timeout_ms.unwrap_or(10000);
 
-        // Read pre-click URL + title snapshot (set by click/click_text/submit_form)
-        let (orig_url, orig_title) = self.pre_nav_snapshot.lock().await.clone();
+        // Read pre-click URL + title snapshot (set by click/click_text/submit_form),
+        // keyed by this call's own tab so a sibling agent's click never leaks in.
+        let resolved_target = self.resolve_target_id(target_id.as_deref()).await;
+        let (orig_url, orig_title) = match &resolved_target {
+            Some(tid) => self.pre_nav_snapshot.lock().await.get(tid).cloned().unwrap_or_default(),
+            None => Default::default(),
+        };
 
         // Inject SPA interceptors: patch pushState/replaceState, listen for popstate/hashchange
         let setup_js = r#"(() => {
@@ -1671,12 +1817,17 @@ impl CausewayServer {
             window.addEventListener('popstate', onNav);
             window.addEventListener('hashchange', onNav);
         })()"#;
-        self.execute_reconnect(commands::evaluate(setup_js)).await.ok();
+        self.execute_reconnect(target_id.as_deref(), commands::evaluate(setup_js)).await.ok();
 
-        // Subscribe to CDP events for full navigations
-        let mut receiver = {
+        // Subscribe to CDP events for full navigations. The connection is shared
+        // across every attached tab, so resolve which session is ours and filter
+        // to it — otherwise a sibling agent's frame/load events on another tab
+        // would be mistaken for this call's own navigation.
+        let (mut receiver, my_session_id) = {
             let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-            cdp::subscribe_events(&*conn)
+            let receiver = cdp::subscribe_events(&conn);
+            let session_id = self.session_for(target_id.as_deref()).await.ok().map(|(_, sid)| sid);
+            (receiver, session_id)
         };
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
@@ -1689,7 +1840,7 @@ impl CausewayServer {
             // Wait for CDP events in 200ms windows, then poll JS + URL snapshot
             let wait = std::cmp::min(remaining, std::time::Duration::from_millis(200));
             match tokio::time::timeout(wait, receiver.recv()).await {
-                Ok(Ok(event)) => match event.method.as_str() {
+                Ok(Ok(event)) if event.session_id.as_deref() == my_session_id.as_deref() => match event.method.as_str() {
                     "Page.navigatedWithinDocument" => {
                         let url = event.params.get("url")
                             .and_then(|v| v.as_str())
@@ -1706,7 +1857,7 @@ impl CausewayServer {
                         if is_main { frame_navigated = true; }
                     }
                     "Page.loadEventFired" if frame_navigated => {
-                        let title = self.execute_reconnect(commands::evaluate("document.title"))
+                        let title = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.title"))
                             .await.ok()
                             .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
                             .unwrap_or_else(|| "(unknown)".to_owned());
@@ -1716,12 +1867,13 @@ impl CausewayServer {
                     }
                     _ => {}
                 },
+                Ok(Ok(_)) => {} // event from a different tab's session — not ours, ignore
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                     // Connection dropped — likely a full navigation destroyed context.
                     // Wait briefly for the new page to settle, then check URL.
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let title = self.execute_reconnect(commands::evaluate("document.title"))
+                    let title = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.title"))
                         .await.ok()
                         .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
                         .unwrap_or_else(|| "(unknown)".to_owned());
@@ -1736,7 +1888,7 @@ impl CausewayServer {
                         url: location.href,
                         title: document.title
                     })"#;
-                    if let Ok(result) = self.execute_reconnect(commands::evaluate(poll_js)).await {
+                    if let Ok(result) = self.execute_reconnect(target_id.as_deref(), commands::evaluate(poll_js)).await {
                         let raw = result.get("result")
                             .and_then(|r| r.get("value"))
                             .and_then(|v| v.as_str())
@@ -1765,13 +1917,13 @@ impl CausewayServer {
         }
 
         // Clean up interceptors
-        self.execute_reconnect(commands::evaluate(
+        self.execute_reconnect(target_id.as_deref(), commands::evaluate(
             "delete window.__causeway_nav"
         )).await.ok();
 
         // Fallback: if we saw frameNavigated but missed loadEventFired
         if frame_navigated {
-            let title = self.execute_reconnect(commands::evaluate("document.title"))
+            let title = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.title"))
                 .await.ok()
                 .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
                 .unwrap_or_else(|| "(unknown)".to_owned());
@@ -1781,7 +1933,7 @@ impl CausewayServer {
         }
 
         // Soft timeout — don't error, just inform
-        let title = self.execute_reconnect(commands::evaluate("document.title"))
+        let title = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.title"))
             .await.ok()
             .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
             .unwrap_or_else(|| "(unknown)".to_owned());
@@ -1791,19 +1943,25 @@ impl CausewayServer {
     }
 
     #[tool(description = "Navigate back in browser history.")]
-    async fn back(&self) -> Result<CallToolResult, McpError> {
-        self.nav_history_step(-1).await
+    async fn back(
+        &self,
+        Parameters(NavHistoryParams { target_id }): Parameters<NavHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.nav_history_step(-1, target_id.as_deref()).await
     }
 
     #[tool(description = "Navigate forward in browser history.")]
-    async fn forward(&self) -> Result<CallToolResult, McpError> {
-        self.nav_history_step(1).await
+    async fn forward(
+        &self,
+        Parameters(NavHistoryParams { target_id }): Parameters<NavHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.nav_history_step(1, target_id.as_deref()).await
     }
 
     /// Navigate back (delta = -1) or forward (delta = +1) using CDP history API.
     /// Page.navigateToHistoryEntry returns after navigation commits — no sleep needed.
-    async fn nav_history_step(&self, delta: i64) -> Result<CallToolResult, McpError> {
-        let history = self.execute_reconnect(commands::get_navigation_history())
+    async fn nav_history_step(&self, delta: i64, target_id: Option<&str>) -> Result<CallToolResult, McpError> {
+        let history = self.execute_reconnect(target_id, commands::get_navigation_history())
             .await
             .map_err(|e| McpError::internal_error(format!("History fetch failed: {e}"), None))?;
 
@@ -1827,11 +1985,11 @@ impl CausewayServer {
             .ok_or_else(|| McpError::internal_error("Invalid history entry".to_owned(), None))?;
 
         // navigateToHistoryEntry returns after navigation commits — then wait for load.
-        self.execute_reconnect(commands::navigate_to_history_entry(entry_id))
+        self.execute_reconnect(target_id, commands::navigate_to_history_entry(entry_id))
             .await
             .map_err(|e| McpError::internal_error(format!("Navigation failed: {e}"), None))?;
 
-        let _ = self.execute_reconnect(commands::evaluate(
+        let _ = self.execute_reconnect(target_id, commands::evaluate(
             "new Promise(resolve => {
                 if (document.readyState === 'complete') { resolve(); return; }
                 window.addEventListener('load', () => resolve(), { once: true });
@@ -1849,7 +2007,7 @@ impl CausewayServer {
     #[tool(description = "Select an option in a <select> dropdown by its value attribute.")]
     async fn select_option(
         &self,
-        Parameters(SelectOptionParams { selector, value }): Parameters<SelectOptionParams>,
+        Parameters(SelectOptionParams { selector, value, target_id }): Parameters<SelectOptionParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -1863,7 +2021,7 @@ impl CausewayServer {
             val = serde_json::to_string(&value).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Select failed: {e}"), None))?;
 
@@ -1888,7 +2046,7 @@ impl CausewayServer {
     #[tool(description = "Toggle a checkbox or radio button by its label text, name, or nearby text. Works via JavaScript — no mouse simulation — so it handles hidden inputs, custom styled controls, and Material Design components that ignore click events. Use this instead of click/click_text when targeting checkboxes or radio buttons.")]
     async fn toggle(
         &self,
-        Parameters(ToggleParams { label, checked }): Parameters<ToggleParams>,
+        Parameters(ToggleParams { label, checked, target_id }): Parameters<ToggleParams>,
     ) -> Result<CallToolResult, McpError> {
         let force_state = match checked {
             Some(true) => "true",
@@ -1963,7 +2121,7 @@ impl CausewayServer {
             force = force_state,
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Toggle failed: {e}"), None))?;
 
@@ -1993,7 +2151,7 @@ impl CausewayServer {
     #[tool(description = "Submit a form element by CSS selector.")]
     async fn submit_form(
         &self,
-        Parameters(ClickParams { selector }): Parameters<ClickParams>,
+        Parameters(ClickParams { selector, target_id }): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -2011,8 +2169,8 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        self.snapshot_pre_nav().await;
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        self.snapshot_pre_nav(target_id.as_deref()).await;
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Submit failed: {e}"), None))?;
 
@@ -2038,7 +2196,11 @@ impl CausewayServer {
     }
 
     #[tool(description = "Discover WebMCP tools declared by the current page via navigator.modelContext. Returns structured tool definitions if the page exposes any.")]
-    async fn discover_webmcp_tools(&self) -> Result<CallToolResult, McpError> {
+    async fn discover_webmcp_tools(
+        &self,
+        Parameters(DiscoverWebmcpToolsParams { target_id }): Parameters<DiscoverWebmcpToolsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_id = target_id.as_deref();
         let js = r#"(() => {
             if (!navigator.modelContext) return { supported: false };
             const tools = navigator.modelContext.tools || [];
@@ -2052,7 +2214,7 @@ impl CausewayServer {
             };
         })()"#;
 
-        let result = self.execute_reconnect(commands::evaluate(js))
+        let result = self.execute_reconnect(target_id, commands::evaluate(js))
             .await
             .map_err(|e| McpError::internal_error(format!("WebMCP check failed: {e}"), None))?;
 
@@ -2184,14 +2346,14 @@ impl CausewayServer {
                     ))?;
 
                 // Enable Runtime domain on the extension connection
-                cdp::send(&ext_conn, "Runtime.enable", serde_json::json!({}))
+                cdp::send(&ext_conn, None, "Runtime.enable", serde_json::json!({}))
                     .await
                     .map_err(|e| McpError::internal_error(
                         format!("Failed to enable Runtime on extension: {e}"), None,
                     ))?;
 
                 // Evaluate with userGesture=true so chrome APIs requiring user action work
-                let result = cdp::send(&ext_conn, "Runtime.evaluate", serde_json::json!({
+                let result = cdp::send(&ext_conn, None, "Runtime.evaluate", serde_json::json!({
                     "expression": js,
                     "returnByValue": true,
                     "awaitPromise": true,
@@ -2241,7 +2403,7 @@ impl CausewayServer {
     #[tool(description = "Inspect the DOM tree starting from a CSS selector. Returns a compact structural view with tag names, key attributes (id, class, href, type, name, value, role, aria-label), and truncated text content. Essential for understanding page structure without screenshots.")]
     async fn inspect(
         &self,
-        Parameters(InspectParams { selector, max_depth }): Parameters<InspectParams>,
+        Parameters(InspectParams { selector, max_depth, target_id }): Parameters<InspectParams>,
     ) -> Result<CallToolResult, McpError> {
         let sel = selector.as_deref().unwrap_or("body");
         let depth = max_depth.unwrap_or(4);
@@ -2305,7 +2467,7 @@ impl CausewayServer {
             depth = depth
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Inspect failed: {e}"), None))?;
 
@@ -2333,7 +2495,7 @@ impl CausewayServer {
     #[tool(description = "Identify the DOM element at specific x/y coordinates. Returns the element and its parent chain with tag, classes, id, role, and text. Use after a screenshot to discover what's at a specific spot — especially useful for custom/obfuscated UIs where CSS selectors are unknown.")]
     async fn point_inspect(
         &self,
-        Parameters(PointInspectParams { x, y }): Parameters<PointInspectParams>,
+        Parameters(PointInspectParams { x, y, target_id }): Parameters<PointInspectParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -2370,7 +2532,7 @@ impl CausewayServer {
             y = y,
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Point inspect failed: {e}"), None))?;
 
@@ -2394,7 +2556,7 @@ impl CausewayServer {
     #[tool(description = "Get the declared CSS styles for an element — shows the actual authored values (rem, var(), %, etc.) not just resolved pixels. Resolves CSS variable references to their declared values. Use this instead of getComputedStyle when you need the real design tokens.")]
     async fn inspect_styles(
         &self,
-        Parameters(InspectStylesParams { selector, properties }): Parameters<InspectStylesParams>,
+        Parameters(InspectStylesParams { selector, properties, target_id }): Parameters<InspectStylesParams>,
     ) -> Result<CallToolResult, McpError> {
         let default_props = vec![
             "font-size", "font-weight", "font-family", "line-height", "letter-spacing",
@@ -2486,7 +2648,7 @@ impl CausewayServer {
             props = props_json,
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Style inspection failed: {e}"), None))?;
 
@@ -2535,7 +2697,7 @@ impl CausewayServer {
     #[tool(description = "Find all elements matching a CSS selector and return their tag, text content, key attributes, and count. Useful for finding interactive elements, links, buttons, form fields, etc.")]
     async fn query_elements(
         &self,
-        Parameters(QueryElementsParams { selector }): Parameters<QueryElementsParams>,
+        Parameters(QueryElementsParams { selector, target_id }): Parameters<QueryElementsParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(() => {{
@@ -2566,7 +2728,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Query failed: {e}"), None))?;
 
@@ -2610,7 +2772,7 @@ impl CausewayServer {
         // endpoint doesn't include browserContextId, so we cross-reference here).
         let context_map: std::collections::HashMap<String, String> = {
             let mut map = std::collections::HashMap::new();
-            if let Ok(result) = self.exec_with_reconnect("Target.getTargets", serde_json::json!({})).await {
+            if let Ok(result) = self.exec_with_reconnect(None, "Target.getTargets", serde_json::json!({})).await {
                 if let Some(infos) = result.get("targetInfos").and_then(|v| v.as_array()) {
                     for t in infos {
                         if let (Some(tid), Some(ctx)) = (
@@ -2626,7 +2788,7 @@ impl CausewayServer {
         };
 
         // Get current page URL to mark the active CDP tab
-        let current_url = self.execute_reconnect(commands::evaluate("window.location.href"))
+        let current_url = self.execute_reconnect(None, commands::evaluate("window.location.href"))
             .await
             .ok()
             .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()));
@@ -2663,71 +2825,102 @@ impl CausewayServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    /// Resolve an explicit or default target_id to the concrete tab it names,
+    /// without attaching a session. Used where callers need the tab's identity
+    /// itself (e.g. as a key), not a connection to act through.
+    async fn resolve_target_id(&self, target_id: Option<&str>) -> Option<String> {
+        match target_id {
+            Some(t) => Some(t.to_owned()),
+            None => self.sticky_target.lock().await.clone(),
+        }
+    }
+
+    /// Resolve the connection + flat session to act on for a call. An explicit
+    /// target_id claims that tab's session directly — independent of whatever
+    /// any other concurrent caller is doing — so concurrent agents never fight
+    /// over a single "current tab". Omitting it falls back to the sticky
+    /// default (today's single-agent behavior).
+    async fn session_for(&self, target_id: Option<&str>) -> Result<(Arc<cdp::CdpConnection>, String), cdp::CdpError> {
+        let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
+        let wanted = match target_id {
+            Some(t) => t.to_owned(),
+            None => self.sticky_target.lock().await.clone().ok_or(cdp::CdpError::SendFailed)?,
+        };
+        let session_id = cdp::attach_session(&conn, &wanted).await?;
+        Ok((conn, session_id))
+    }
+
     /// Execute a CDP command, retrying once with reconnect on connection failure.
-    async fn exec_with_reconnect(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, cdp::CdpError> {
-        // Lazy init: if no connection yet, reconnect first (launches browser if needed)
-        let result = match self.live.get().await {
-            Some(conn) => cdp::send(&*conn, method, params.clone()).await,
-            None => Err(cdp::CdpError::SendFailed),
+    async fn exec_with_reconnect(&self, target_id: Option<&str>, method: &str, params: serde_json::Value) -> Result<serde_json::Value, cdp::CdpError> {
+        // Lazy init: if no connection/session yet, reconnect first (launches browser if needed)
+        let result = match self.session_for(target_id).await {
+            Ok((conn, session_id)) => cdp::send(&conn, Some(&session_id), method, params.clone()).await,
+            Err(e) => Err(e),
         };
         match result {
             Ok(val) => Ok(val),
             Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
                 self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
-                let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
-                cdp::send(&*conn, method, params).await
+                let (conn, session_id) = self.session_for(target_id).await?;
+                cdp::send(&conn, Some(&session_id), method, params).await
             }
             Err(e) => Err(e),
         }
     }
 
     /// Execute a CDP command (built by commands.rs) with reconnect on failure.
-    async fn execute_reconnect(&self, command: (&str, serde_json::Value)) -> Result<serde_json::Value, cdp::CdpError> {
+    async fn execute_reconnect(&self, target_id: Option<&str>, command: (&str, serde_json::Value)) -> Result<serde_json::Value, cdp::CdpError> {
         let (method, params) = command;
-        self.exec_with_reconnect(method, params).await
+        self.exec_with_reconnect(target_id, method, params).await
     }
 
     /// Execute a CDP command sequence with reconnect on failure.
-    async fn execute_seq_reconnect(&self, commands: Vec<(&'static str, serde_json::Value)>) -> Result<serde_json::Value, cdp::CdpError> {
-        let result = match self.live.get().await {
-            Some(conn) => cdp::execute_sequence(&*conn, commands.clone()).await,
-            None => Err(cdp::CdpError::SendFailed),
+    async fn execute_seq_reconnect(&self, target_id: Option<&str>, commands: Vec<(&'static str, serde_json::Value)>) -> Result<serde_json::Value, cdp::CdpError> {
+        let result = match self.session_for(target_id).await {
+            Ok((conn, session_id)) => cdp::execute_sequence(&conn, Some(&session_id), commands.clone()).await,
+            Err(e) => Err(e),
         };
         match result {
             Ok(val) => Ok(val),
             Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
                 self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
-                let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
-                cdp::execute_sequence(&*conn, commands).await
+                let (conn, session_id) = self.session_for(target_id).await?;
+                cdp::execute_sequence(&conn, Some(&session_id), commands).await
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Snapshot URL + title before a click action, for wait_for_navigation to compare against.
-    async fn snapshot_pre_nav(&self) {
+    /// Snapshot URL + title before a click action, for wait_for_navigation to compare
+    /// against. Keyed by the resolved target_id so concurrent agents' snapshots never
+    /// clobber each other.
+    async fn snapshot_pre_nav(&self, target_id: Option<&str>) {
         let js = r#"JSON.stringify({ url: location.href, title: document.title })"#;
-        if let Ok(result) = self.execute_reconnect(commands::evaluate(js)).await {
+        if let Ok(result) = self.execute_reconnect(target_id, commands::evaluate(js)).await {
             if let Some(raw) = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
                     let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                     let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-                    *self.pre_nav_snapshot.lock().await = (url, title);
+                    if let Some(tid) = self.resolve_target_id(target_id).await {
+                        self.pre_nav_snapshot.lock().await.insert(tid, (url, title));
+                    }
                 }
             }
         }
     }
 
-    /// Reconnect CDP, staying within our locked profile (browserContextId).
-    /// Priority: the sticky tab if alive → any tab in our profile → a fresh tab
-    /// in our profile. Never hijacks a tab from another Edge profile. Relaunches
-    /// the browser if it's dead. Guarded so only one reconnect runs at a time.
+    /// Reconnect the browser-level CDP socket, staying within our locked profile
+    /// (browserContextId). Priority: the sticky tab if alive → any tab in our
+    /// profile → a fresh tab in our profile. Never hijacks a tab from another
+    /// Edge profile. Relaunches the browser if it's dead. Guarded so only one
+    /// reconnect runs at a time. Tab-to-tab targeting never calls this — it
+    /// only runs when the one persistent connection itself has died.
     async fn try_reconnect(&self) -> Result<(), String> {
         let _guard = self.reconnect_guard.lock().await;
 
         // Check if another caller already reconnected while we waited for the guard
         if let Some(conn) = self.live.get().await {
-            if cdp::send(&*conn, "Runtime.evaluate", serde_json::json!({"expression": "1"})).await.is_ok() {
+            if cdp::send(&conn, None, "Runtime.evaluate", serde_json::json!({"expression": "1"})).await.is_ok() {
                 tracing::debug!("Reconnect skipped — connection already restored by another caller");
                 return Ok(());
             }
@@ -2754,12 +2947,12 @@ impl CausewayServer {
             }
         };
 
-        // Step 2: open a browser-level connection and list all page targets
-        // with their browserContextId (profile).
-        let browser_conn = cdp::connect(&browser_ws)
+        // Step 2: open the (single, persistent) browser-level connection and
+        // list all page targets with their browserContextId (profile).
+        let new_conn = cdp::connect(&browser_ws)
             .await
             .map_err(|e| format!("Browser endpoint connect failed: {e}"))?;
-        let targets_result = cdp::send(&browser_conn, "Target.getTargets", serde_json::json!({}))
+        let targets_result = cdp::send(&new_conn, None, "Target.getTargets", serde_json::json!({}))
             .await
             .map_err(|e| format!("Target.getTargets failed: {e}"))?;
         let page_targets: Vec<(String, Option<String>)> = targets_result
@@ -2802,7 +2995,7 @@ impl CausewayServer {
             if let Some(ctx) = &locked_ctx {
                 params["browserContextId"] = serde_json::json!(ctx);
             }
-            let res = cdp::send(&browser_conn, "Target.createTarget", params)
+            let res = cdp::send(&new_conn, None, "Target.createTarget", params)
                 .await
                 .map_err(|e| format!("Failed to create tab in our profile: {e}"))?;
             created_new = true;
@@ -2812,16 +3005,14 @@ impl CausewayServer {
                 .ok_or_else(|| "Target.createTarget returned no targetId".to_owned())?
         };
 
-        // Step 4: connect to the chosen page target.
+        // Step 4: attach a flat session to the chosen target — this is our
+        // default/sticky tab. No separate page WebSocket needed.
         if created_new {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
-        let page_ws = crate::browser::find_target_ws_url(self.port, Some(&chosen_id))
+        cdp::attach_session(&new_conn, &chosen_id)
             .await
-            .map_err(|e| format!("Could not find WS URL for target {chosen_id}: {e}"))?;
-        let new_conn = cdp::connect_to_target(&page_ws)
-            .await
-            .map_err(|e| format!("Reconnect failed: {e}"))?;
+            .map_err(|e| format!("Attach session failed: {e}"))?;
         self.live.swap(new_conn).await;
         self.resubscribe_events().await;
 
@@ -2841,26 +3032,18 @@ impl CausewayServer {
         Ok(())
     }
 
-    /// Reconnect CDP to a specific target by ID.
-    async fn reconnect_to_target(&self, target_id: &str) -> Result<(), McpError> {
-        let ws_url = crate::browser::find_target_ws_url(self.port, Some(target_id))
+    /// Claim a flat session for a specific tab on the existing browser-level
+    /// connection. No connection swap, no effect on any other caller's
+    /// session — attaching is claiming a tab, not repointing a shared default.
+    async fn attach_to_target(&self, target_id: &str) -> Result<(), McpError> {
+        let conn = self.live.get().await.ok_or_else(|| McpError::internal_error("Not connected", None))?;
+        cdp::attach_session(&conn, target_id)
             .await
-            .map_err(|e| McpError::internal_error(
-                format!("Could not find WebSocket URL for target {target_id}: {e}"),
-                None,
-            ))?;
-        let new_conn = cdp::connect_to_target(&ws_url)
-            .await
-            .map_err(|e| McpError::internal_error(
-                format!("Failed to connect to target {target_id}: {e}"),
-                None,
-            ))?;
-        self.live.swap(new_conn).await;
-        self.resubscribe_events().await;
+            .map_err(|e| McpError::internal_error(format!("Failed to attach to target {target_id}: {e}"), None))?;
         Ok(())
     }
 
-    #[tool(description = "Switch to a browser tab by its target ID (from list_tabs).")]
+    #[tool(description = "Switch the default tab to a browser tab by its target ID (from list_tabs). Only affects calls that omit target_id — concurrent agents should pass target_id on their own calls instead of calling this.")]
     async fn switch_tab(
         &self,
         Parameters(SwitchTabParams { target_id }): Parameters<SwitchTabParams>,
@@ -2870,23 +3053,24 @@ impl CausewayServer {
         // Visually activate the tab
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         cdp::send(
-            &*conn,
+            &conn,
+            None,
             "Target.activateTarget",
             serde_json::json!({ "targetId": target_id }),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("Activate tab failed: {e}"), None))?;
 
-        // Reconnect CDP to the new tab's target and pin it as sticky.
-        self.reconnect_to_target(&target_id).await?;
+        // Attach a session to the target and pin it as the sticky default.
+        self.attach_to_target(&target_id).await?;
         *self.sticky_target.lock().await = Some(target_id.clone());
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Switched to tab {target_id} (CDP reconnected)"
+            "Switched default tab to {target_id}"
         ))]))
     }
 
-    #[tool(description = "Open a new browser tab, optionally with a URL.")]
+    #[tool(description = "Open a new browser tab, optionally with a URL. Returns the tab's target_id — capture it and pass it as target_id on every subsequent call for that tab so concurrent agents never collide over the same default tab.")]
     async fn new_tab(
         &self,
         Parameters(NewTabParams { url }): Parameters<NewTabParams>,
@@ -2905,7 +3089,7 @@ impl CausewayServer {
         }
 
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-        let result = cdp::send(&*conn, "Target.createTarget", params)
+        let result = cdp::send(&conn, None, "Target.createTarget", params)
             .await
             .map_err(|e| McpError::internal_error(format!("New tab failed: {e}"), None))?;
 
@@ -2918,12 +3102,12 @@ impl CausewayServer {
         // Give the new tab a moment to register its debug endpoint
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Reconnect CDP to the new tab and pin it as sticky.
-        self.reconnect_to_target(&target_id).await?;
+        // Attach a session to the new tab and pin it as the sticky default.
+        self.attach_to_target(&target_id).await?;
         *self.sticky_target.lock().await = Some(target_id.clone());
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Opened and switched to new tab [{target_id}]: {target_url}"
+            "Opened tab [{target_id}]: {target_url}\nPass target_id=\"{target_id}\" on subsequent calls to keep acting on this tab."
         ))]))
     }
 
@@ -2934,12 +3118,14 @@ impl CausewayServer {
     ) -> Result<CallToolResult, McpError> {
         let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
         cdp::send(
-            &*conn,
+            &conn,
+            None,
             "Target.closeTarget",
             serde_json::json!({ "targetId": target_id }),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("Close tab failed: {e}"), None))?;
+        cdp::detach_session(&conn, &target_id).await;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Closed tab {target_id}"
@@ -2951,11 +3137,11 @@ impl CausewayServer {
     #[tool(description = "Handle a browser dialog (alert, confirm, prompt, or beforeunload). Use this when a dialog is blocking the page.")]
     async fn handle_dialog(
         &self,
-        Parameters(HandleDialogParams { accept, prompt_text }): Parameters<HandleDialogParams>,
+        Parameters(HandleDialogParams { accept, prompt_text, target_id }): Parameters<HandleDialogParams>,
     ) -> Result<CallToolResult, McpError> {
         let dialog_info = self.pending_dialog.lock().await.take();
 
-        match self.execute_reconnect(commands::handle_dialog(accept, prompt_text.as_deref())).await {
+        match self.execute_reconnect(target_id.as_deref(), commands::handle_dialog(accept, prompt_text.as_deref())).await {
             Ok(_) => {
                 let action = if accept { "accepted" } else { "dismissed" };
                 let detail = dialog_info
@@ -2982,10 +3168,10 @@ impl CausewayServer {
     #[tool(description = "Press a keyboard shortcut with modifier keys (e.g. \"Ctrl+A\", \"Ctrl+Shift+T\", \"Alt+F4\"). Use modifier names: Ctrl, Alt, Shift, Meta.")]
     async fn keyboard_chord(
         &self,
-        Parameters(KeyboardChordParams { chord }): Parameters<KeyboardChordParams>,
+        Parameters(KeyboardChordParams { chord, target_id }): Parameters<KeyboardChordParams>,
     ) -> Result<CallToolResult, McpError> {
         let (modifiers, key) = parse_chord(&chord);
-        self.execute_seq_reconnect(commands::key_chord(&key, modifiers))
+        self.execute_seq_reconnect(target_id.as_deref(), commands::key_chord(&key, modifiers))
             .await
             .map_err(|e| McpError::internal_error(format!("Keyboard chord failed: {e}"), None))?;
 
@@ -2997,10 +3183,10 @@ impl CausewayServer {
     #[tool(description = "Double-click an element by CSS selector. Useful for selecting text or triggering double-click handlers.")]
     async fn double_click(
         &self,
-        Parameters(DoubleClickParams { selector }): Parameters<DoubleClickParams>,
+        Parameters(DoubleClickParams { selector, target_id }): Parameters<DoubleClickParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = js_find_visible_element(&selector);
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -3009,7 +3195,7 @@ impl CausewayServer {
             Some(v) if !v.is_null() => {
                 let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                self.execute_seq_reconnect(commands::double_click(x, y))
+                self.execute_seq_reconnect(target_id.as_deref(), commands::double_click(x, y))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Double-click failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format!(
@@ -3027,12 +3213,12 @@ impl CausewayServer {
     async fn drag(
         &self,
         #[allow(clippy::too_many_arguments)]
-        Parameters(DragParams { from_selector, to_selector, from_x, from_y, to_x, to_y, steps }): Parameters<DragParams>,
+        Parameters(DragParams { from_selector, to_selector, from_x, from_y, to_x, to_y, steps, target_id }): Parameters<DragParams>,
     ) -> Result<CallToolResult, McpError> {
         // Resolve "from" coordinates
         let (fx, fy) = if let Some(sel) = &from_selector {
             let js = js_find_visible_element(sel);
-            let result = self.execute_reconnect(commands::evaluate(&js))
+            let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Failed to find from element: {e}"), None))?;
             let v = result.get("result").and_then(|r| r.get("value"))
@@ -3052,7 +3238,7 @@ impl CausewayServer {
         // Resolve "to" coordinates
         let (tx, ty) = if let Some(sel) = &to_selector {
             let js = js_find_visible_element(sel);
-            let result = self.execute_reconnect(commands::evaluate(&js))
+            let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Failed to find to element: {e}"), None))?;
             let v = result.get("result").and_then(|r| r.get("value"))
@@ -3070,7 +3256,7 @@ impl CausewayServer {
         };
 
         let drag_steps = steps.unwrap_or(10);
-        self.execute_seq_reconnect(commands::drag(fx, fy, tx, ty, drag_steps))
+        self.execute_seq_reconnect(target_id.as_deref(), commands::drag(fx, fy, tx, ty, drag_steps))
             .await
             .map_err(|e| McpError::internal_error(format!("Drag failed: {e}"), None))?;
 
@@ -3082,9 +3268,9 @@ impl CausewayServer {
     #[tool(description = "Set the browser viewport size. Useful for testing responsive layouts or ensuring consistent screenshots.")]
     async fn set_viewport(
         &self,
-        Parameters(SetViewportParams { width, height }): Parameters<SetViewportParams>,
+        Parameters(SetViewportParams { width, height, target_id }): Parameters<SetViewportParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.execute_reconnect(commands::set_viewport(width, height))
+        self.execute_reconnect(target_id.as_deref(), commands::set_viewport(width, height))
             .await
             .map_err(|e| McpError::internal_error(format!("Set viewport failed: {e}"), None))?;
 
@@ -3094,11 +3280,15 @@ impl CausewayServer {
     }
 
     #[tool(description = "Get a snapshot of the page's accessibility tree. Works on all pages — browsers compute the AX tree from semantic HTML even without explicit ARIA. Returns a compact indented role/name tree, much more token-efficient than screenshots for navigation.")]
-    async fn accessibility_snapshot(&self) -> Result<CallToolResult, McpError> {
+    async fn accessibility_snapshot(
+        &self,
+        Parameters(AccessibilitySnapshotParams { target_id }): Parameters<AccessibilitySnapshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_id = target_id.as_deref();
         // Enable Accessibility domain (idempotent)
-        let _ = self.execute_reconnect(commands::enable_accessibility()).await;
+        let _ = self.execute_reconnect(target_id, commands::enable_accessibility()).await;
 
-        let result = self.execute_reconnect(commands::get_full_ax_tree())
+        let result = self.execute_reconnect(target_id, commands::get_full_ax_tree())
             .await
             .map_err(|e| McpError::internal_error(format!("Accessibility snapshot failed: {e}"), None))?;
 
@@ -3196,10 +3386,11 @@ impl CausewayServer {
     #[tool(description = "Download a file from a URL and save it to a local path. Works for images, documents, or any publicly accessible file. Automatically forwards browser cookies for authenticated downloads.")]
     async fn download_file(
         &self,
-        Parameters(DownloadFileParams { url, save_path }): Parameters<DownloadFileParams>,
+        Parameters(DownloadFileParams { url, save_path, target_id }): Parameters<DownloadFileParams>,
     ) -> Result<CallToolResult, McpError> {
         // Forward browser cookies for the target URL (enables authenticated downloads)
         let cookie_header = self.exec_with_reconnect(
+            target_id.as_deref(),
             "Network.getCookies",
             serde_json::json!({ "urls": [&url] }),
         )
@@ -3278,7 +3469,7 @@ impl CausewayServer {
     #[tool(description = "Take a screenshot of a specific element by CSS selector. Returns the cropped image as base64 PNG.")]
     async fn element_screenshot(
         &self,
-        Parameters(ElementScreenshotParams { selector }): Parameters<ElementScreenshotParams>,
+        Parameters(ElementScreenshotParams { selector, target_id }): Parameters<ElementScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
         let js = format!(
             r#"(async () => {{
@@ -3298,7 +3489,7 @@ impl CausewayServer {
             sel = serde_json::to_string(&selector).unwrap()
         );
 
-        let result = self.execute_reconnect(commands::evaluate(&js))
+        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js))
             .await
             .map_err(|e| McpError::internal_error(format!("Failed to find element: {e}"), None))?;
 
@@ -3324,6 +3515,7 @@ impl CausewayServer {
 
         for &q in qualities {
             let screenshot_result = self.exec_with_reconnect(
+                target_id.as_deref(),
                 "Page.captureScreenshot",
                 serde_json::json!({
                     "format": "webp",
@@ -3360,9 +3552,9 @@ impl CausewayServer {
     #[tool(description = "Save the current page as a PDF file. Renders the full page with print styles applied.")]
     async fn save_pdf(
         &self,
-        Parameters(SavePdfParams { save_path }): Parameters<SavePdfParams>,
+        Parameters(SavePdfParams { save_path, target_id }): Parameters<SavePdfParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = self.execute_reconnect(commands::print_to_pdf())
+        let result = self.execute_reconnect(target_id.as_deref(), commands::print_to_pdf())
             .await
             .map_err(|e| McpError::internal_error(format!("PDF generation failed: {e}"), None))?;
 
@@ -3392,10 +3584,14 @@ impl CausewayServer {
     }
 
     #[tool(description = "Get browser performance metrics: DOM node count, JS heap size, layout count, and more. Useful for diagnosing performance issues.")]
-    async fn get_page_metrics(&self) -> Result<CallToolResult, McpError> {
-        let _ = self.execute_reconnect(commands::enable_performance()).await;
+    async fn get_page_metrics(
+        &self,
+        Parameters(GetPageMetricsParams { target_id }): Parameters<GetPageMetricsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_id = target_id.as_deref();
+        let _ = self.execute_reconnect(target_id, commands::enable_performance()).await;
 
-        let result = self.execute_reconnect(commands::get_metrics())
+        let result = self.execute_reconnect(target_id, commands::get_metrics())
             .await
             .map_err(|e| McpError::internal_error(format!("Get metrics failed: {e}"), None))?;
 
@@ -3429,12 +3625,12 @@ impl CausewayServer {
     #[tool(description = "Clear browser cache and/or site storage (cookies, localStorage, sessionStorage, IndexedDB, cache storage). Operates on the current page's origin.")]
     async fn clear_storage(
         &self,
-        Parameters(ClearStorageParams { storage_types, clear_cache }): Parameters<ClearStorageParams>,
+        Parameters(ClearStorageParams { storage_types, clear_cache, target_id }): Parameters<ClearStorageParams>,
     ) -> Result<CallToolResult, McpError> {
         let mut cleared = Vec::new();
 
         // Get current origin for storage clearing
-        let origin_result = self.execute_reconnect(commands::evaluate("window.location.origin"))
+        let origin_result = self.execute_reconnect(target_id.as_deref(), commands::evaluate("window.location.origin"))
             .await
             .ok();
         let origin = origin_result
@@ -3448,21 +3644,21 @@ impl CausewayServer {
 
         // Clear via CDP Storage domain
         if !origin.is_empty() {
-            let _ = self.execute_reconnect(commands::clear_data_for_origin(origin, types)).await;
+            let _ = self.execute_reconnect(target_id.as_deref(), commands::clear_data_for_origin(origin, types)).await;
             cleared.push(format!("storage ({types}) for {origin}"));
         }
 
         // Also clear via JS for good measure (some storage types need both)
         if types == "all" || types.contains("local_storage") {
-            let _ = self.execute_reconnect(commands::evaluate("localStorage.clear()")).await;
+            let _ = self.execute_reconnect(target_id.as_deref(), commands::evaluate("localStorage.clear()")).await;
         }
         if types == "all" || types.contains("session_storage") {
-            let _ = self.execute_reconnect(commands::evaluate("sessionStorage.clear()")).await;
+            let _ = self.execute_reconnect(target_id.as_deref(), commands::evaluate("sessionStorage.clear()")).await;
         }
 
         // Clear HTTP cache
         if clear_cache.unwrap_or(true) {
-            let _ = self.execute_reconnect(commands::clear_browser_cache()).await;
+            let _ = self.execute_reconnect(target_id.as_deref(), commands::clear_browser_cache()).await;
             cleared.push("browser cache".to_owned());
         }
 
@@ -3475,17 +3671,17 @@ impl CausewayServer {
     #[tool(description = "Emulate a mobile device or custom viewport with user agent, touch events, and device scale factor. Use device presets or specify custom parameters. Use device='reset' to clear emulation.")]
     async fn emulate_device(
         &self,
-        Parameters(EmulateDeviceParams { device, width, height, user_agent, touch, device_scale_factor }): Parameters<EmulateDeviceParams>,
+        Parameters(EmulateDeviceParams { device, width, height, user_agent, touch, device_scale_factor, target_id }): Parameters<EmulateDeviceParams>,
     ) -> Result<CallToolResult, McpError> {
         // Handle reset
         if device.as_deref() == Some("reset") {
-            self.execute_reconnect(commands::clear_device_override())
+            self.execute_reconnect(target_id.as_deref(), commands::clear_device_override())
                 .await
                 .map_err(|e| McpError::internal_error(format!("Clear emulation failed: {e}"), None))?;
-            self.execute_reconnect(commands::set_user_agent(""))
+            self.execute_reconnect(target_id.as_deref(), commands::set_user_agent(""))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Clear user agent failed: {e}"), None))?;
-            self.execute_reconnect(commands::set_touch_emulation(false))
+            self.execute_reconnect(target_id.as_deref(), commands::set_touch_emulation(false))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Clear touch failed: {e}"), None))?;
             return Ok(CallToolResult::success(vec![Content::text(
@@ -3502,13 +3698,13 @@ impl CausewayServer {
                 let actual_ua = user_agent.as_deref().unwrap_or(ua);
                 let actual_touch = touch.unwrap_or(mobile);
 
-                self.execute_reconnect(commands::emulate_device_metrics(actual_w, actual_h, actual_scale, mobile))
+                self.execute_reconnect(target_id.as_deref(), commands::emulate_device_metrics(actual_w, actual_h, actual_scale, mobile))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Set device metrics failed: {e}"), None))?;
-                self.execute_reconnect(commands::set_user_agent(actual_ua))
+                self.execute_reconnect(target_id.as_deref(), commands::set_user_agent(actual_ua))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Set user agent failed: {e}"), None))?;
-                self.execute_reconnect(commands::set_touch_emulation(actual_touch))
+                self.execute_reconnect(target_id.as_deref(), commands::set_touch_emulation(actual_touch))
                     .await
                     .map_err(|e| McpError::internal_error(format!("Set touch failed: {e}"), None))?;
 
@@ -3533,17 +3729,17 @@ impl CausewayServer {
         let scale = device_scale_factor.unwrap_or(1.0);
         let enable_touch = touch.unwrap_or(false);
 
-        self.execute_reconnect(commands::emulate_device_metrics(w, h, scale, enable_touch))
+        self.execute_reconnect(target_id.as_deref(), commands::emulate_device_metrics(w, h, scale, enable_touch))
             .await
             .map_err(|e| McpError::internal_error(format!("Set device metrics failed: {e}"), None))?;
 
         if let Some(ua) = &user_agent {
-            self.execute_reconnect(commands::set_user_agent(ua))
+            self.execute_reconnect(target_id.as_deref(), commands::set_user_agent(ua))
                 .await
                 .map_err(|e| McpError::internal_error(format!("Set user agent failed: {e}"), None))?;
         }
 
-        self.execute_reconnect(commands::set_touch_emulation(enable_touch))
+        self.execute_reconnect(target_id.as_deref(), commands::set_touch_emulation(enable_touch))
             .await
             .map_err(|e| McpError::internal_error(format!("Set touch failed: {e}"), None))?;
 
@@ -3555,7 +3751,7 @@ impl CausewayServer {
     #[tool(description = "Batch multiple browser actions into one call with human-like timing. PREFER THIS over calling click/type_text/press_key individually when you have 2+ steps planned — it's faster (one round-trip vs many) and adds natural ~1s delays between steps. Supports: click, click_text, click_link, type_text, press_key, keyboard_chord, select_option, scroll, wait_for, wait_for_text, navigate, evaluate_js. Each step can override the delay with a 'sleep' field (ms). Stops on first failure and reports which step failed. Example: filling a login form is one chain call, not five separate tool calls.")]
     async fn chain(
         &self,
-        Parameters(ChainParams { steps, delay_ms }): Parameters<ChainParams>,
+        Parameters(ChainParams { steps, delay_ms, target_id }): Parameters<ChainParams>,
     ) -> Result<CallToolResult, McpError> {
         use rand::Rng;
 
@@ -3589,14 +3785,14 @@ impl CausewayServer {
                         McpError::invalid_params(format!("Step {}: click requires \"selector\"", i + 1), None)
                     })?;
                     let js = js_find_visible_element(selector);
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
                         .ok_or_else(|| McpError::invalid_params(format!("Step {}: no element found for: {selector}", i + 1), None))?;
                     let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    self.snapshot_pre_nav().await;
-                    self.execute_seq_reconnect(commands::click(x, y)).await
+                    self.snapshot_pre_nav(target_id.as_deref()).await;
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
                     format!("Clicked '{selector}' at ({x:.0}, {y:.0})")
                 }
@@ -3631,15 +3827,15 @@ impl CausewayServer {
                         text = serde_json::to_string(text).unwrap(),
                         tag = serde_json::to_string(tag_filter).unwrap()
                     );
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
                         .ok_or_else(|| McpError::invalid_params(format!("Step {}: no element with text \"{text}\"", i + 1), None))?;
                     let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let matched = coords.get("matched").and_then(|v| v.as_str()).unwrap_or(text);
-                    self.snapshot_pre_nav().await;
-                    self.execute_seq_reconnect(commands::click(x, y)).await
+                    self.snapshot_pre_nav(target_id.as_deref()).await;
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
                     format!("Clicked \"{matched}\" at ({x:.0}, {y:.0})")
                 }
@@ -3675,7 +3871,7 @@ impl CausewayServer {
                         text = serde_json::to_string(text).unwrap(),
                         idx = idx,
                     );
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let coords = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
                         .ok_or_else(|| McpError::invalid_params(format!("Step {}: no interactive element with text \"{text}\"", i + 1), None))?;
@@ -3685,8 +3881,8 @@ impl CausewayServer {
                     let x = coords.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let y = coords.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let matched = coords.get("matched").and_then(|v| v.as_str()).unwrap_or(text);
-                    self.snapshot_pre_nav().await;
-                    self.execute_seq_reconnect(commands::click(x, y)).await
+                    self.snapshot_pre_nav(target_id.as_deref()).await;
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::click(x, y)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: click failed: {e}", i + 1), None))?;
                     format!("Clicked \"{matched}\" at ({x:.0}, {y:.0})")
                 }
@@ -3699,13 +3895,13 @@ impl CausewayServer {
                     })?;
                     let should_clear = step.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
                     let js = js_focus_visible_element(selector, should_clear);
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let focused = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false);
                     if !focused {
                         return Err(McpError::invalid_params(format!("Step {}: element not focusable: {selector}", i + 1), None));
                     }
-                    self.execute_seq_reconnect(commands::type_text(text)).await
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::type_text(text)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: type failed: {e}", i + 1), None))?;
                     format!("Typed {} chars into '{selector}'", text.len())
                 }
@@ -3713,7 +3909,7 @@ impl CausewayServer {
                     let key = step.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
                         McpError::invalid_params(format!("Step {}: press_key requires \"key\"", i + 1), None)
                     })?;
-                    self.execute_seq_reconnect(commands::press_key(key)).await
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::press_key(key)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: key press failed: {e}", i + 1), None))?;
                     format!("Pressed {key}")
                 }
@@ -3722,7 +3918,7 @@ impl CausewayServer {
                         McpError::invalid_params(format!("Step {}: keyboard_chord requires \"chord\"", i + 1), None)
                     })?;
                     let (modifiers, key) = parse_chord(chord);
-                    self.execute_seq_reconnect(commands::key_chord(&key, modifiers)).await
+                    self.execute_seq_reconnect(target_id.as_deref(), commands::key_chord(&key, modifiers)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: chord failed: {e}", i + 1), None))?;
                     format!("Pressed {chord}")
                 }
@@ -3738,7 +3934,7 @@ impl CausewayServer {
                         sel = serde_json::to_string(selector).unwrap(),
                         val = serde_json::to_string(value).unwrap()
                     );
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let ok = result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false);
                     if !ok {
@@ -3749,7 +3945,7 @@ impl CausewayServer {
                 "scroll" => {
                     let x = step.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let y = step.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    self.execute_reconnect(commands::scroll(x, y)).await
+                    self.execute_reconnect(target_id.as_deref(), commands::scroll(x, y)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: scroll failed: {e}", i + 1), None))?;
                     format!("Scrolled ({x:.0}, {y:.0})")
                 }
@@ -3763,7 +3959,7 @@ impl CausewayServer {
                     let mut found = false;
                     for _ in 0..max_attempts {
                         let js = format!("document.querySelector({sel}) !== null", sel = serde_json::to_string(selector).unwrap());
-                        let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                             .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                         if result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
                             found = true;
@@ -3791,7 +3987,7 @@ impl CausewayServer {
                             sel = serde_json::to_string(container).unwrap(),
                             text = serde_json::to_string(&text.to_lowercase()).unwrap()
                         );
-                        let result = self.execute_reconnect(commands::evaluate(&js)).await
+                        let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                             .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                         if result.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
                             found = true;
@@ -3808,12 +4004,12 @@ impl CausewayServer {
                     let url = step.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
                         McpError::invalid_params(format!("Step {}: navigate requires \"url\"", i + 1), None)
                     })?;
-                    self.execute_reconnect(commands::navigate(url)).await
+                    self.execute_reconnect(target_id.as_deref(), commands::navigate(url)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: navigate failed: {e}", i + 1), None))?;
-                    let _ = self.execute_reconnect(commands::evaluate(
+                    let _ = self.execute_reconnect(target_id.as_deref(), commands::evaluate(
                         "new Promise(resolve => { if (document.readyState === 'complete') { resolve(); return; } window.addEventListener('load', () => resolve(), { once: true }); setTimeout(resolve, 8000); })",
                     )).await;
-                    let title = self.execute_reconnect(commands::evaluate("document.title")).await
+                    let title = self.execute_reconnect(target_id.as_deref(), commands::evaluate("document.title")).await
                         .ok()
                         .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_owned()))
                         .unwrap_or_else(|| "(unknown)".to_owned());
@@ -3823,7 +4019,7 @@ impl CausewayServer {
                     let expression = step.get("expression").and_then(|v| v.as_str()).ok_or_else(|| {
                         McpError::invalid_params(format!("Step {}: evaluate_js requires \"expression\"", i + 1), None)
                     })?;
-                    let result = self.execute_reconnect(commands::evaluate(expression)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(expression)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: JS eval failed: {e}", i + 1), None))?;
                     let value = result.get("result").and_then(|r| r.get("value"));
                     let display = value.map(|v| {
@@ -3878,7 +4074,7 @@ impl CausewayServer {
                         label = serde_json::to_string(label).unwrap(),
                         force = force_state,
                     );
-                    let result = self.execute_reconnect(commands::evaluate(&js)).await
+                    let result = self.execute_reconnect(target_id.as_deref(), commands::evaluate(&js)).await
                         .map_err(|e| McpError::internal_error(format!("Step {}: {e}", i + 1), None))?;
                     let val = result.get("result").and_then(|r| r.get("value")).filter(|v| !v.is_null())
                         .ok_or_else(|| McpError::invalid_params(format!("Step {}: no checkbox/radio found for \"{label}\"", i + 1), None))?;

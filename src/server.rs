@@ -734,8 +734,7 @@ impl CausewayServer {
 
     /// Look up the browserContextId of a given target. Returns None if not found.
     async fn target_browser_context_id(&self, target_id: &str) -> Option<String> {
-        let conn = self.live.get().await?;
-        let result = cdp::send(&conn, None, "Target.getTargets", serde_json::json!({})).await.ok()?;
+        let result = self.exec_browser_reconnect("Target.getTargets", serde_json::json!({})).await.ok()?;
         let targets = result.get("targetInfos")?.as_array()?;
         for t in targets {
             if t.get("targetId").and_then(|v| v.as_str()) == Some(target_id) {
@@ -780,28 +779,20 @@ impl CausewayServer {
             if self.live.get().await.is_none() {
                 self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
             }
-            if let Some(conn) = self.live.get().await {
-                // Lock onto our profile (browserContextId) before creating the tab
-                self.ensure_sticky_context().await;
-                let sticky_ctx = self.sticky_browser_context_id.lock().await.clone();
-                let mut params = serde_json::json!({ "url": &url });
-                if let Some(ctx) = &sticky_ctx {
-                    params["browserContextId"] = serde_json::json!(ctx);
-                }
-                let result = cdp::send(&conn, None, "Target.createTarget", params).await;
-                if let Ok(res) = result {
-                    if let Some(new_target_id) = res.get("targetId").and_then(|v| v.as_str()) {
-                        let tid = new_target_id.to_owned();
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        if self.attach_to_target(&tid).await.is_ok() {
-                            *self.sticky_target.lock().await = Some(tid.clone());
-                            opened = Some(tid);
-                            // Fall through to the wait-for-load + title logic below
-                        }
+            // Lock onto our profile (browserContextId) before creating the tab
+            let result = self.create_target_in_locked_profile(&url).await;
+            if let Ok(res) = result {
+                if let Some(new_target_id) = res.get("targetId").and_then(|v| v.as_str()) {
+                    let tid = new_target_id.to_owned();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if self.attach_to_target(&tid).await.is_ok() {
+                        *self.sticky_target.lock().await = Some(tid.clone());
+                        opened = Some(tid);
+                        // Fall through to the wait-for-load + title logic below
                     }
                 }
-                // If new tab failed for any reason, fall through to normal navigate
             }
+            // If new tab failed for any reason, fall through to normal navigate
             opened
         } else {
             // Normal navigate: default/sticky tab
@@ -2868,6 +2859,59 @@ impl CausewayServer {
         }
     }
 
+    /// Create a tab in our locked profile, retrying with a freshly re-derived
+    /// browserContextId if the cached one has gone stale. CDP hands out a new
+    /// browserContextId every time the browser process starts, so a relaunch that
+    /// happens between caching it and using it (e.g. the browser died from some
+    /// other cause than a connection failure exec_browser_reconnect would catch)
+    /// leaves the cache pointing at a context id the live browser has never heard
+    /// of — surfaces as a proper CDP error response, not a connection failure, so
+    /// exec_browser_reconnect's own retry never fires for it. Force a full
+    /// reconnect here instead, which re-derives sticky_target + context from
+    /// whatever the browser actually has, then retry once with that fresh value.
+    async fn create_target_in_locked_profile(&self, url: &str) -> Result<serde_json::Value, cdp::CdpError> {
+        self.ensure_sticky_context().await;
+        let ctx = self.sticky_browser_context_id.lock().await.clone();
+        let build_params = |ctx: &Option<String>| {
+            let mut params = serde_json::json!({ "url": url });
+            if let Some(c) = ctx { params["browserContextId"] = serde_json::json!(c); }
+            params
+        };
+
+        match self.exec_browser_reconnect("Target.createTarget", build_params(&ctx)).await {
+            Ok(val) => Ok(val),
+            Err(cdp::CdpError::ResponseError { message, .. }) if message.contains("Failed to find browser context") => {
+                tracing::info!("Cached browserContextId is stale — forcing reconnect to re-derive it");
+                *self.sticky_browser_context_id.lock().await = None;
+                self.try_reconnect().await.map_err(cdp::CdpError::ConnectionFailed)?;
+                let fresh_ctx = self.sticky_browser_context_id.lock().await.clone();
+                self.exec_browser_reconnect("Target.createTarget", build_params(&fresh_ctx)).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Execute a browser-level CDP command (Target.getTargets/createTarget/activateTarget/
+    /// closeTarget — never scoped to any tab's flat session), retrying once with reconnect
+    /// on connection failure. Every tab-management tool routes through this instead of a
+    /// bare cdp::send so a dead/relaunched browser self-heals here exactly like every other
+    /// tool, rather than failing hard on the first send.
+    async fn exec_browser_reconnect(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, cdp::CdpError> {
+        let result = match self.live.get().await {
+            Some(conn) => cdp::send(&conn, None, method, params.clone()).await,
+            None => Err(cdp::CdpError::SendFailed),
+        };
+        match result {
+            Ok(val) => Ok(val),
+            Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
+                self.try_reconnect().await.map_err(|msg| cdp::CdpError::ConnectionFailed(msg))?;
+                let conn = self.live.get().await.ok_or(cdp::CdpError::SendFailed)?;
+                cdp::send(&conn, None, method, params).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Execute a CDP command (built by commands.rs) with reconnect on failure.
     async fn execute_reconnect(&self, target_id: Option<&str>, command: (&str, serde_json::Value)) -> Result<serde_json::Value, cdp::CdpError> {
         let (method, params) = command;
@@ -2928,7 +2972,7 @@ impl CausewayServer {
 
         tracing::info!("Attempting CDP reconnect...");
         let sticky = self.sticky_target.lock().await.clone();
-        let locked_ctx = self.sticky_browser_context_id.lock().await.clone();
+        let mut locked_ctx = self.sticky_browser_context_id.lock().await.clone();
 
         // Step 1: ensure the browser is reachable. The browser-level endpoint
         // exists independent of tabs — failing to find a *tab* never means
@@ -2940,7 +2984,14 @@ impl CausewayServer {
                 crate::browser::launch(&self.browser_config)
                     .await
                     .map_err(|e| format!("Failed to relaunch browser: {e}"))?;
+                // A fresh browser process gets a fresh browserContextId — CDP assigns
+                // it per-process, not persisted with the on-disk profile. The old one
+                // is dead now; clear it too (both the shared field and this fn's local
+                // copy) or every Target.createTarget fails with "Failed to find browser
+                // context with id ..." forever, since nothing else ever re-derives it.
                 *self.sticky_target.lock().await = None;
+                *self.sticky_browser_context_id.lock().await = None;
+                locked_ctx = None;
                 crate::browser::browser_ws_url(self.port)
                     .await
                     .map_err(|e| format!("Browser still unreachable after relaunch: {e}"))?
@@ -3035,12 +3086,24 @@ impl CausewayServer {
     /// Claim a flat session for a specific tab on the existing browser-level
     /// connection. No connection swap, no effect on any other caller's
     /// session — attaching is claiming a tab, not repointing a shared default.
+    /// Retries once through reconnect on a dead connection, same as every other call.
     async fn attach_to_target(&self, target_id: &str) -> Result<(), McpError> {
-        let conn = self.live.get().await.ok_or_else(|| McpError::internal_error("Not connected", None))?;
-        cdp::attach_session(&conn, target_id)
-            .await
-            .map_err(|e| McpError::internal_error(format!("Failed to attach to target {target_id}: {e}"), None))?;
-        Ok(())
+        let result = match self.live.get().await {
+            Some(conn) => cdp::attach_session(&conn, target_id).await,
+            None => Err(cdp::CdpError::SendFailed),
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(cdp::CdpError::SendFailed) | Err(cdp::CdpError::ResponseDropped) | Err(cdp::CdpError::Timeout) => {
+                self.try_reconnect().await.map_err(|msg| McpError::internal_error(msg, None))?;
+                let conn = self.live.get().await.ok_or_else(|| McpError::internal_error("Not connected", None))?;
+                cdp::attach_session(&conn, target_id)
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to attach to target {target_id}: {e}"), None))?;
+                Ok(())
+            }
+            Err(e) => Err(McpError::internal_error(format!("Failed to attach to target {target_id}: {e}"), None)),
+        }
     }
 
     #[tool(description = "Switch the default tab to a browser tab by its target ID (from list_tabs). Only affects calls that omit target_id — concurrent agents should pass target_id on their own calls instead of calling this.")]
@@ -3051,10 +3114,7 @@ impl CausewayServer {
         // Explicitly chose a tab — no need for first-navigate to open another
         self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
         // Visually activate the tab
-        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-        cdp::send(
-            &conn,
-            None,
+        self.exec_browser_reconnect(
             "Target.activateTarget",
             serde_json::json!({ "targetId": target_id }),
         )
@@ -3079,17 +3139,7 @@ impl CausewayServer {
         self.first_navigate.store(false, std::sync::atomic::Ordering::Relaxed);
         let target_url = url.as_deref().unwrap_or("about:blank");
 
-        // Ensure we know which profile we belong to
-        self.ensure_sticky_context().await;
-        let sticky_ctx = self.sticky_browser_context_id.lock().await.clone();
-
-        let mut params = serde_json::json!({ "url": target_url });
-        if let Some(ctx) = &sticky_ctx {
-            params["browserContextId"] = serde_json::json!(ctx);
-        }
-
-        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-        let result = cdp::send(&conn, None, "Target.createTarget", params)
+        let result = self.create_target_in_locked_profile(target_url)
             .await
             .map_err(|e| McpError::internal_error(format!("New tab failed: {e}"), None))?;
 
@@ -3116,16 +3166,15 @@ impl CausewayServer {
         &self,
         Parameters(CloseTabParams { target_id }): Parameters<CloseTabParams>,
     ) -> Result<CallToolResult, McpError> {
-        let conn = self.live.get().await.ok_or(McpError::internal_error("Not connected", None))?;
-        cdp::send(
-            &conn,
-            None,
+        self.exec_browser_reconnect(
             "Target.closeTarget",
             serde_json::json!({ "targetId": target_id }),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("Close tab failed: {e}"), None))?;
-        cdp::detach_session(&conn, &target_id).await;
+        if let Some(conn) = self.live.get().await {
+            cdp::detach_session(&conn, &target_id).await;
+        }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Closed tab {target_id}"

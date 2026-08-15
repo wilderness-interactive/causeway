@@ -19,9 +19,10 @@ pub async fn launch(config: &BrowserConfig) -> Result<(), BrowserError> {
     // spawn gets the flag. Safe for other Causeway instances: if any had CDP
     // active, try_connect_existing above would have already connected.
     let exe_name = extract_exe_name(&config.executable);
-    if is_process_running(&exe_name) {
+    let match_key = kill_match_key(&config, &exe_name);
+    if is_process_running(&match_key) {
         tracing::info!("Killing existing {exe_name} — CDP unavailable, must relaunch with debugging port");
-        kill_and_wait(&exe_name).await?;
+        kill_and_wait(&match_key).await?;
     }
 
     let mut args = vec![
@@ -76,63 +77,93 @@ fn extract_exe_name(executable: &str) -> String {
         .to_owned()
 }
 
-/// Check if a process with this name is currently running (Windows: tasklist).
+/// The key used to match an existing browser process before killing it. On Unix,
+/// pgrep/pkill match the full command line, so a dedicated profile's user-data-dir
+/// is a precise, safe key that never tears down a normally-running browser. On
+/// Windows, tasklist/taskkill match by image name only, so the exe name is the
+/// only workable key there.
+#[cfg(not(target_os = "windows"))]
+fn kill_match_key(config: &BrowserConfig, exe_name: &str) -> String {
+    if config.dedicated_profile {
+        if let Some(dir) = &config.user_data_dir {
+            return dir.clone();
+        }
+    }
+    exe_name.to_owned()
+}
+
 #[cfg(target_os = "windows")]
-fn is_process_running(exe_name: &str) -> bool {
+fn kill_match_key(_config: &BrowserConfig, exe_name: &str) -> String {
+    exe_name.to_owned()
+}
+
+/// Check if a process matching `match_key` is currently running (Windows: tasklist).
+#[cfg(target_os = "windows")]
+fn is_process_running(match_key: &str) -> bool {
     let output = Command::new("tasklist")
-        .args(["/FI", &format!("IMAGENAME eq {exe_name}"), "/NH"])
+        .args(["/FI", &format!("IMAGENAME eq {match_key}"), "/NH"])
         .output();
 
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.contains(exe_name)
+            stdout.contains(match_key)
         }
         Err(_) => false,
     }
 }
 
-/// Check if a process with this name is currently running (Unix: pgrep).
+/// Check if a process matching `match_key` is currently running (Unix: pgrep).
 /// `pgrep -f` matches against the full command line, so the executable basename
-/// (e.g. "Microsoft Edge") matches the browser and its helper processes.
+/// (e.g. "Microsoft Edge") or a dedicated profile's user-data-dir matches the
+/// browser and its helper processes.
 #[cfg(not(target_os = "windows"))]
-fn is_process_running(exe_name: &str) -> bool {
-    match Command::new("pgrep").args(["-f", exe_name]).output() {
+fn is_process_running(match_key: &str) -> bool {
+    match Command::new("pgrep").args(["-f", match_key]).output() {
         Ok(out) => out.status.success() && !out.stdout.is_empty(),
         Err(_) => false,
     }
 }
 
-/// Kill all processes with this name and wait until they're actually gone.
+/// Kill the processes matching `match_key` and wait until they're actually gone.
 /// Retries the kill if processes survive, because Chromium spawns many child
 /// processes that can respawn or linger (crashpad, updater, GPU process).
-async fn kill_and_wait(exe_name: &str) -> Result<(), BrowserError> {
-    // Kill, check, re-kill if needed. 30s total outer bound.
+async fn kill_and_wait(match_key: &str) -> Result<(), BrowserError> {
+    // Graceful first: SIGTERM lets the browser flush its profile (cookies, login
+    // state) to disk before it dies, so a relaunch doesn't drop signed-in
+    // sessions. Escalate to SIGKILL only for child processes that linger.
+    kill_browser_processes(match_key, false);
+
     for tick in 0..120 {
-        if !is_process_running(exe_name) {
-            tracing::info!("{exe_name} fully terminated");
+        if !is_process_running(match_key) {
+            tracing::info!("{match_key} fully terminated");
             return Ok(());
         }
 
-        // Kill on first tick and every 3 seconds thereafter
-        if tick % 12 == 0 {
-            let attempt = tick / 12 + 1;
-            tracing::info!("kill attempt {attempt} for {exe_name}");
-            kill_browser_processes(exe_name);
+        // Force-kill survivors after ~8s of grace, then every 2s.
+        if tick >= 32 && tick % 8 == 0 {
+            tracing::info!("force-killing remaining {match_key} processes");
+            kill_browser_processes(match_key, true);
         }
 
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
     Err(BrowserError::LaunchFailed(
-        format!("Could not kill {exe_name} after 30s — is another program holding it?")
+        format!("Could not kill {match_key} after 30s — is another program holding it?")
     ))
 }
 
-/// Force-kill all processes matching this browser executable name (Windows: taskkill).
+/// Kill processes matching `match_key` (Windows: taskkill). `force` escalates
+/// from a polite close request to a hard /F kill.
 #[cfg(target_os = "windows")]
-fn kill_browser_processes(exe_name: &str) {
-    match Command::new("taskkill").args(["/F", "/IM", exe_name]).output() {
+fn kill_browser_processes(match_key: &str, force: bool) {
+    let mut cmd = Command::new("taskkill");
+    cmd.arg("/IM").arg(match_key);
+    if force {
+        cmd.arg("/F");
+    }
+    match cmd.output() {
         Ok(o) if !o.status.success() => {
             tracing::warn!("taskkill: {}", String::from_utf8_lossy(&o.stderr).trim());
         }
@@ -141,13 +172,15 @@ fn kill_browser_processes(exe_name: &str) {
     }
 }
 
-/// Force-kill all processes matching this browser executable name (Unix: pkill).
-/// `pkill -f` matches the name anywhere in the command line, catching Chromium's
-/// helper processes (GPU, renderer, crashpad) too. Exit code 1 just means
-/// "nothing matched" — not an error worth logging.
+/// Kill processes matching `match_key` (Unix: pkill). `pkill -f` matches the key
+/// anywhere in the command line, catching Chromium's helper processes (GPU,
+/// renderer, crashpad) too. Exit code 1 just means "nothing matched" — not an
+/// error worth logging. `force` escalates from SIGTERM (polite, flushes the
+/// profile to disk) to SIGKILL (hard).
 #[cfg(not(target_os = "windows"))]
-fn kill_browser_processes(exe_name: &str) {
-    match Command::new("pkill").args(["-9", "-f", exe_name]).output() {
+fn kill_browser_processes(match_key: &str, force: bool) {
+    let signal = if force { "-9" } else { "-TERM" };
+    match Command::new("pkill").args([signal, "-f", match_key]).output() {
         Ok(o) if !o.status.success() && o.status.code() != Some(1) => {
             tracing::warn!("pkill: {}", String::from_utf8_lossy(&o.stderr).trim());
         }
